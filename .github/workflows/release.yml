@@ -10,27 +10,8 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: pmux.exe
-            asset_name: pmux-windows-x86_64.exe
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: pmux
-            asset_name: pmux-linux-x86_64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: pmux
-            asset_name: pmux-macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: pmux
-            asset_name: pmux-macos-aarch64
+    name: Build Windows
+    runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -38,16 +19,28 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-action@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Create release package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          $dir = "pmux-windows-x86_64"
+          New-Item -ItemType Directory -Path $dir -Force
+          Copy-Item "target/x86_64-pc-windows-msvc/release/pmux.exe" "$dir/pmux.exe"
+          Copy-Item "target/x86_64-pc-windows-msvc/release/tmux.exe" "$dir/tmux.exe"
+          Copy-Item "README.md" "$dir/"
+          Copy-Item "LICENSE" "$dir/"
+          Compress-Archive -Path $dir -DestinationPath "pmux-windows-x86_64.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          name: pmux-windows-x86_64
+          path: pmux-windows-x86_64.zip
 
   release:
     name: Create Release
@@ -61,10 +54,27 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            pmux-windows-x86_64.exe/pmux.exe
-            pmux-linux-x86_64/pmux
-            pmux-macos-x86_64/pmux
-            pmux-macos-aarch64/pmux
+            pmux-windows-x86_64/pmux-windows-x86_64.zip
+          body: |
+            ## pmux ${{ github.ref_name }}
+            
+            A PowerShell-focused terminal multiplexer for Windows.
+            
+            ### Installation
+            
+            **Using Cargo:**
+            ```powershell
+            cargo install pmux
+            ```
+            
+            **Manual Installation:**
+            1. Download `pmux-windows-x86_64.zip`
+            2. Extract to a folder in your PATH
+            3. Both `pmux` and `tmux` commands will be available
+            
+            ### What's Included
+            - `pmux.exe` - Main executable
+            - `tmux.exe` - Alias for tmux compatibility
           draft: false
           prerelease: false
         env:

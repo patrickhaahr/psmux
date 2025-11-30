@@ -4,10 +4,21 @@ version = "0.1.0"
 edition = "2021"
 description = "A PowerShell-focused terminal multiplexer inspired by tmux, written in Rust"
 license = "MIT"
-repository = "https://github.com/computersrmyfriends/pmux"
+repository = "https://github.com/marlocarlo/pmux"
 readme = "README.md"
-keywords = ["terminal", "multiplexer", "tmux", "tui", "cli", "powershell"]
+keywords = ["terminal", "multiplexer", "tmux", "tui", "cli", "powershell", "windows"]
 categories = ["command-line-utilities"]
+
+# Windows only
+[target.'cfg(not(windows))'.dependencies]
+
+[[bin]]
+name = "pmux"
+path = "src/main.rs"
+
+[[bin]]
+name = "tmux"
+path = "src/main.rs"
 
 [dependencies]
 ratatui = "0.26"
