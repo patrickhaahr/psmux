@@ -13,8 +13,12 @@ Write-Host "psmux installer" -ForegroundColor Cyan
 Write-Host "===============" -ForegroundColor Cyan
 
 # Determine if we're installing from local build or downloading
-$LocalBuild = Test-Path "$PSScriptRoot\..\target\release\psmux.exe"
-$RepoRoot = Split-Path -Parent $PSScriptRoot
+# When run via iex, $PSScriptRoot is empty
+$LocalBuild = $false
+if ($PSScriptRoot -and (Test-Path "$PSScriptRoot\..\target\release\psmux.exe")) {
+    $LocalBuild = $true
+    $RepoRoot = Split-Path -Parent $PSScriptRoot
+}
 
 if ($LocalBuild) {
     Write-Host "Installing from local build..." -ForegroundColor Yellow
