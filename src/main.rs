@@ -1766,6 +1766,10 @@ fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Resu
         std::net::TcpStream::connect(&addr).ok()
     };
     
+    // Struct to hold window info for status bar
+    #[derive(serde::Deserialize, Default)]
+    struct WinStatus { id: usize, name: String, active: bool }
+    
     loop {
         // Fetch layout BEFORE draw - this also serves as liveness check
         let root: LayoutJson = if let Ok(mut s) = std::net::TcpStream::connect(&addr) {
@@ -1781,6 +1785,20 @@ fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Resu
         } else {
             // Server connection failed - exit immediately
             break;
+        };
+        
+        // Fetch window list for status bar
+        let windows: Vec<WinStatus> = if let Ok(mut s) = std::net::TcpStream::connect(&addr) {
+            let _ = s.set_read_timeout(Some(Duration::from_millis(50)));
+            let _ = std::io::Write::write_all(&mut s, b"list-windows\n");
+            let mut buf = String::new();
+            if std::io::Read::read_to_string(&mut s, &mut buf).is_ok() {
+                serde_json::from_str(&buf).unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
         };
         
         terminal.draw(|f| {
@@ -1877,9 +1895,21 @@ fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Resu
                 }
                 rec(&root, chunks[0], &mut rects);
                 choices.clear();
-                for (i,(pid,r)) in rects.iter().enumerate() { if i<10 { choices.push((i+1,*pid)); let bw=7u16; let bh=3u16; let bx=r.x + r.width.saturating_sub(bw)/2; let by=r.y + r.height.saturating_sub(bh)/2; let b=Rect{ x:bx, y:by, width:bw, height:bh }; let block=Block::default().borders(Borders::ALL).style(Style::default().bg(Color::Yellow).fg(Color::Black)); let inner=block.inner(b); let disp=if i+1==10 {0} else {i+1}; let line=Line::from(Span::styled(format!(" {} ",disp), Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD))); let para=Paragraph::new(line).alignment(Alignment::Center); f.render_widget(Clear,b); f.render_widget(block,b); f.render_widget(para,inner);} }
+                for (i,(pid,r)) in rects.iter().enumerate() { if i<10 { choices.push((i+1,*pid)); let bw=7u16; let bh=3u16; let bx=r.x + r.width.saturating_sub(bw)/2; let by=r.y + r.height.saturating_sub(bh)/2; let b=Rect{ x:bx, y:by, width:bw, height:bh }; let block=Block::default().borders(Borders::ALL).style(Style::default().bg(Color::Yellow).fg(Color::Black)); let inner=block.inner(b); let disp=if i+1==10 {0} else {i+1}; let para=Paragraph::new(Line::from(Span::styled(format!(" {} ",disp), Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)))).alignment(Alignment::Center); f.render_widget(Clear,b); f.render_widget(block,b); f.render_widget(para,inner);} }
             }
-            let status_bar = Paragraph::new(Line::from(vec![Span::raw(format!("session:{}", name))])).style(Style::default().bg(Color::Green).fg(Color::Black));
+            // Build status bar with session name and window list like tmux
+            let mut status_spans: Vec<Span> = vec![
+                Span::styled(format!("[{}] ", name), Style::default().fg(Color::Black).bg(Color::Green)),
+            ];
+            for (i, w) in windows.iter().enumerate() {
+                let win_text = format!("{}:{}", i, w.name);
+                if w.active {
+                    status_spans.push(Span::styled(format!("{}* ", win_text), Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)));
+                } else {
+                    status_spans.push(Span::styled(format!("{} ", win_text), Style::default().fg(Color::Black).bg(Color::Green)));
+                }
+            }
+            let status_bar = Paragraph::new(Line::from(status_spans)).style(Style::default().bg(Color::Green).fg(Color::Black));
             f.render_widget(Clear, chunks[1]);
             f.render_widget(status_bar, chunks[1]);
             if renaming {
