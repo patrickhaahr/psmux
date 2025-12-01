@@ -381,9 +381,9 @@ fn main() -> io::Result<()> {
                                             let addr = format!("127.0.0.1:{}", port_str.trim());
                                             if let Ok(mut s) = std::net::TcpStream::connect_timeout(
                                                 &addr.parse().unwrap(),
-                                                Duration::from_millis(500)
+                                                Duration::from_millis(50)
                                             ) {
-                                                let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
+                                                let _ = s.set_read_timeout(Some(Duration::from_millis(50)));
                                                 let _ = std::io::Write::write_all(&mut s, b"session-info\n");
                                                 let mut br = std::io::BufReader::new(s);
                                                 let mut line = String::new();
@@ -1660,7 +1660,7 @@ fn main() -> io::Result<()> {
                     let addr = format!("127.0.0.1:{}", port);
                     std::net::TcpStream::connect_timeout(
                         &addr.parse().unwrap(),
-                        Duration::from_millis(200)
+                        Duration::from_millis(50)
                     ).is_ok()
                 } else {
                     false
@@ -1770,10 +1770,10 @@ fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Resu
         std::net::TcpStream::connect(&addr).ok()
     };
     
+    let mut server_alive = true;
+    
     loop {
-        // Check if server is still alive before drawing
-        if std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(20)).is_err() {
-            // Server is gone, exit gracefully
+        if !server_alive {
             break;
         }
         
@@ -1784,13 +1784,15 @@ fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Resu
             if let Ok(mut cs) = std::net::TcpStream::connect(addr.clone()) {
                 let _ = std::io::Write::write_all(&mut cs, format!("client-size {} {}\n", chunks[0].width, chunks[0].height).as_bytes());
             }
-            // fetch layout json
+            // fetch layout json - also serves as liveness check
             let root: LayoutJson = if let Ok(mut s) = std::net::TcpStream::connect(addr.clone()) {
                 let _ = std::io::Write::write_all(&mut s, b"dump-layout\n");
                 let mut buf = String::new();
                 let _ = std::io::Read::read_to_string(&mut s, &mut buf);
                 serde_json::from_str(&buf).unwrap_or(LayoutJson::Leaf { id: 0, rows: 0, cols: 0, cursor_row: 0, cursor_col: 0, content: Vec::new() })
             } else {
+                // Server connection failed - mark for exit
+                server_alive = false;
                 LayoutJson::Leaf { id: 0, rows: 0, cols: 0, cursor_row: 0, cursor_col: 0, content: Vec::new() }
             };
 
@@ -1894,7 +1896,7 @@ fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Resu
                 f.render_widget(para, overlay.inner(oa));
             }
         })?;
-        if event::poll(Duration::from_millis(16))? {
+        if event::poll(Duration::from_millis(16))? {  // ~60fps, faster response
             match event::read()? { Event::Key(key) if key.kind == KeyEventKind::Press => {
                 if matches!(key.code, KeyCode::Char('q')) && key.modifiers.contains(KeyModifiers::CONTROL) { quit = true; }
                 else if matches!(key.code, KeyCode::Char('b')) && key.modifiers.contains(KeyModifiers::CONTROL) { prefix_armed = true; }
@@ -1943,12 +1945,12 @@ fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Resu
                                                 if let Ok(port_str) = std::fs::read_to_string(e.path()) {
                                                     if let Ok(p) = port_str.trim().parse::<u16>() {
                                                         let sess_addr = format!("127.0.0.1:{}", p);
-                                                        // Try to get session info, but don't block too long
+                                                        // Try to get session info quickly
                                                         let info = if let Ok(mut ss) = std::net::TcpStream::connect_timeout(
                                                             &sess_addr.parse().unwrap(),
-                                                            Duration::from_millis(100)
+                                                            Duration::from_millis(25)
                                                         ) {
-                                                            let _ = ss.set_read_timeout(Some(Duration::from_millis(100)));
+                                                            let _ = ss.set_read_timeout(Some(Duration::from_millis(25)));
                                                             let _ = std::io::Write::write_all(&mut ss, b"session-info\n");
                                                             let mut br = std::io::BufReader::new(ss);
                                                             let mut line = String::new();
@@ -5502,7 +5504,7 @@ fn run_server(session_name: String) -> io::Result<()> {
             let _ = std::fs::remove_file(&regpath);
             break;
         }
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(5));  // Faster response, lower latency
     }
     Ok(())
 }
