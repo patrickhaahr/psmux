@@ -1886,6 +1886,14 @@ fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Resu
             let status_bar = Paragraph::new(Line::from(vec![Span::raw(format!("session:{}", name))])).style(Style::default().bg(Color::Green).fg(Color::Black));
             f.render_widget(Clear, chunks[1]);
             f.render_widget(status_bar, chunks[1]);
+            if renaming {
+                let overlay = Block::default().borders(Borders::ALL).title("rename window");
+                let oa = centered_rect(60, 3, chunks[0]);
+                f.render_widget(Clear, oa);
+                f.render_widget(&overlay, oa);
+                let para = Paragraph::new(format!("name: {}", rename_buf));
+                f.render_widget(para, overlay.inner(oa));
+            }
             if pane_renaming {
                 let overlay = Block::default().borders(Borders::ALL).title("set pane title");
                 let oa = centered_rect(60, 3, chunks[0]);
