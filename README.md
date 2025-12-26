@@ -41,7 +41,9 @@ If you've used tmux on Linux/macOS and wished you had something similar on Windo
 ## Requirements
 
 - Windows 10 or Windows 11
-- PowerShell 5.1+, PowerShell Core 7+, or cmd.exe
+- **PowerShell 7+** (recommended) or cmd.exe
+  - Download PowerShell: `winget install --id Microsoft.PowerShell`
+  - Or visit: https://aka.ms/powershell
 
 ## Installation
 
