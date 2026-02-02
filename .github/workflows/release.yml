@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -28,20 +31,20 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}"
-          $dir = "psmux-windows-x86_64"
-          New-Item -ItemType Directory -Path $dir -Force
-          Copy-Item "target/x86_64-pc-windows-msvc/release/psmux.exe" "$dir/psmux.exe"
-          Copy-Item "target/x86_64-pc-windows-msvc/release/pmux.exe" "$dir/pmux.exe"
-          Copy-Item "target/x86_64-pc-windows-msvc/release/tmux.exe" "$dir/tmux.exe"
-          Copy-Item "README.md" "$dir/"
-          Copy-Item "LICENSE" "$dir/"
-          Compress-Archive -Path $dir -DestinationPath "psmux-windows-x86_64.zip"
+          $zipName = "psmux-$version-windows-x64"
+          New-Item -ItemType Directory -Path $zipName -Force
+          Copy-Item "target/x86_64-pc-windows-msvc/release/psmux.exe" "$zipName/psmux.exe"
+          Copy-Item "target/x86_64-pc-windows-msvc/release/pmux.exe" "$zipName/pmux.exe"
+          Copy-Item "target/x86_64-pc-windows-msvc/release/tmux.exe" "$zipName/tmux.exe"
+          Copy-Item "README.md" "$zipName/"
+          Copy-Item "LICENSE" "$zipName/"
+          Compress-Archive -Path "$zipName/*" -DestinationPath "$zipName.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: psmux-windows-x86_64
-          path: psmux-windows-x86_64.zip
+          name: psmux-release
+          path: psmux-*-windows-x64.zip
 
   release:
     name: Create Release
@@ -51,11 +54,14 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
+      - name: List artifacts
+        run: find . -type f -name "*.zip"
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            psmux-windows-x86_64/psmux-windows-x86_64.zip
+            psmux-release/*.zip
           body: |
             ## psmux ${{ github.ref_name }}
             
@@ -63,13 +69,18 @@ jobs:
             
             ### Installation
             
-            **Using Cargo:**
+            **Via PowerShell (recommended):**
             ```powershell
-            cargo install psmux
+            irm https://raw.githubusercontent.com/marlocarlo/psmux/master/scripts/install.ps1 | iex
+            ```
+            
+            **Via Chocolatey:**
+            ```powershell
+            choco install psmux
             ```
             
             **Manual Installation:**
-            1. Download `psmux-windows-x86_64.zip`
+            1. Download `psmux-${{ github.ref_name }}-windows-x64.zip`
             2. Extract to a folder in your PATH
             3. `psmux`, `pmux`, and `tmux` commands will all be available
             
