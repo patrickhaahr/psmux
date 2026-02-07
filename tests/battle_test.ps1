@@ -32,10 +32,10 @@ if (-not (Test-Path $PSMUX)) {
 }
 
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║               PSMUX BATTLE TEST SUITE                                ║" -ForegroundColor Cyan
-Write-Host "║               Comprehensive Feature Testing                          ║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "========================================================================" -ForegroundColor Cyan
+Write-Host "               PSMUX BATTLE TEST SUITE                                " -ForegroundColor Cyan
+Write-Host "               Comprehensive Feature Testing                          " -ForegroundColor Cyan
+Write-Host "========================================================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Info "Binary: $PSMUX"
 Write-Info "Started: $(Get-Date)"
@@ -273,7 +273,7 @@ foreach ($dir in @("-U", "-D", "-L", "-R")) {
 Write-Pass "select-pane all directions executed"
 
 # Test 3.6: Rapid pane navigation
-Write-Test "Rapid pane navigation (10 cycles)"
+Write-Test "Rapid pane navigation - 10 cycles"
 foreach ($i in 1..10) {
     & $PSMUX select-pane -U -t pane_test 2>&1 | Out-Null
     & $PSMUX select-pane -R -t pane_test 2>&1 | Out-Null
@@ -689,16 +689,16 @@ Write-Info "Cleanup complete"
 # FINAL SUMMARY
 # ============================================================================
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║                         FINAL RESULTS                                ║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "========================================================================" -ForegroundColor Cyan
+Write-Host "                         FINAL RESULTS                                " -ForegroundColor Cyan
+Write-Host "========================================================================" -ForegroundColor Cyan
 Write-Host ""
 
 $total = $script:TestsPassed + $script:TestsFailed + $script:TestsSkipped
 Write-Host "  Total Tests: $total"
-Write-Host "  ✓ Passed:    $($script:TestsPassed)" -ForegroundColor Green
-Write-Host "  ✗ Failed:    $($script:TestsFailed)" -ForegroundColor Red
-Write-Host "  ○ Skipped:   $($script:TestsSkipped)" -ForegroundColor Yellow
+Write-Host "  [v] Passed:    $($script:TestsPassed)" -ForegroundColor Green
+Write-Host "  [x] Failed:    $($script:TestsFailed)" -ForegroundColor Red
+Write-Host "  [o] Skipped:   $($script:TestsSkipped)" -ForegroundColor Yellow
 Write-Host ""
 
 $passRate = if ($total -gt 0) { [math]::Round(($script:TestsPassed / $total) * 100, 1) } else { 0 }
@@ -708,9 +708,9 @@ Write-Info "Completed: $(Get-Date)"
 Write-Host ""
 
 if ($script:TestsFailed -eq 0) {
-    Write-Host "🎉 ALL TESTS PASSED! psmux is battle-ready!" -ForegroundColor Green
+    Write-Host "ALL TESTS PASSED! psmux is battle-ready!" -ForegroundColor Green
     exit 0
 } else {
-    Write-Host "⚠️  Some tests failed. Review the output above." -ForegroundColor Yellow
+    Write-Host "Some tests failed. Review the output above." -ForegroundColor Yellow
     exit 1
 }
