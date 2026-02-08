@@ -169,12 +169,14 @@ Enter copy mode with `Prefix + [` or `Prefix + {` to scroll through terminal his
 | `→` / `l` | Move cursor right |
 | `v` | Start selection |
 | `y` | Yank (copy) selection |
+| `Mouse drag + release` | Select text and copy to clipboard |
 | `Esc` / `q` | Exit copy mode |
 
 When in copy mode:
 - The pane border turns **yellow** 
 - `[copy mode]` appears in the title
 - A scroll position indicator shows in the top-right corner
+- Mouse selection in copy mode is copied to the Windows clipboard on release
 
 ## Scripting & Automation
 
