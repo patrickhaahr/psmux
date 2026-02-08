@@ -1,8 +1,14 @@
 use std::io::{self, Write};
 #[cfg(windows)]
-use std::process::{Command, Stdio};
+use std::thread;
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::time::Duration;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{GlobalFree, HGLOBAL};
+#[cfg(windows)]
+use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+#[cfg(windows)]
+use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
 use crate::types::*;
 use crate::tree::*;
@@ -14,19 +20,43 @@ pub fn enter_copy_mode(app: &mut AppState) {
 
 #[cfg(windows)]
 fn copy_to_system_clipboard(text: &str) {
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    if let Ok(mut child) = Command::new("cmd")
-        .args(["/C", "clip"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-    {
-        if let Some(stdin) = child.stdin.as_mut() {
-            let _ = stdin.write_all(text.as_bytes());
+    const CF_UNICODETEXT: u32 = 13;
+
+    // Clipboard can be momentarily locked by other processes; retry briefly.
+    for _ in 0..5 {
+        let opened = unsafe { OpenClipboard(std::ptr::null_mut()) };
+        if opened == 0 {
+            thread::sleep(Duration::from_millis(2));
+            continue;
         }
-        let _ = child.wait();
+
+        let mut utf16: Vec<u16> = text.encode_utf16().collect();
+        utf16.push(0); // null terminator required by CF_UNICODETEXT
+        let size_bytes = utf16.len() * std::mem::size_of::<u16>();
+        let mut hmem: HGLOBAL = std::ptr::null_mut();
+
+        unsafe {
+            if EmptyClipboard() != 0 {
+                hmem = GlobalAlloc(GMEM_MOVEABLE, size_bytes);
+                if !hmem.is_null() {
+                    let dst = GlobalLock(hmem) as *mut u16;
+                    if !dst.is_null() {
+                        std::ptr::copy_nonoverlapping(utf16.as_ptr(), dst, utf16.len());
+                        GlobalUnlock(hmem);
+                        if !SetClipboardData(CF_UNICODETEXT, hmem).is_null() {
+                            // Ownership transferred to the OS on success.
+                            hmem = std::ptr::null_mut();
+                        }
+                    }
+                }
+            }
+
+            if !hmem.is_null() {
+                let _ = GlobalFree(hmem);
+            }
+            let _ = CloseClipboard();
+        }
+        break;
     }
 }
 
