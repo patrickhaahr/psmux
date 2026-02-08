@@ -673,9 +673,13 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
             }
         }
     });
+    let mut state_dirty = true;
+    let mut cached_dump_state = String::new();
+    let mut last_dump_build = std::time::Instant::now() - Duration::from_secs(1);
     loop {
         let mut sent_pty_input = false;
         while let Some(req) = app.control_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            let mutates_state = !matches!(&req, CtrlReq::DumpState(_));
             match req {
                 CtrlReq::NewWindow(cmd) => { let _ = create_window(&*pty_system, &mut app, cmd.as_deref()); resize_all_panes(&mut app); }
                 CtrlReq::SplitWindow(k, cmd) => { let _ = split_active_with_command(&mut app, k, cmd.as_deref()); resize_all_panes(&mut app); }
@@ -709,6 +713,13 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     let _ = resp.send(json);
                 }
                 CtrlReq::DumpState(resp) => {
+                    if !state_dirty
+                        && !cached_dump_state.is_empty()
+                        && last_dump_build.elapsed() < Duration::from_millis(120)
+                    {
+                        let _ = resp.send(cached_dump_state.clone());
+                        continue;
+                    }
                     // Brief yield to let ConPTY + PSReadLine finish rendering after input
                     // Without this, dump-state can capture an intermediate render state
                     // (e.g., PSReadLine mid-redraw showing prediction artifacts)
@@ -727,6 +738,10 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         tree_json,
                         app.window_base_index
                     );
+                    cached_dump_state = combined.clone();
+                    last_dump_build = std::time::Instant::now();
+                    state_dirty = false;
+                    sent_pty_input = false;
                     let _ = resp.send(combined);
                 }
                 CtrlReq::SendText(s) => { send_text_to_active(&mut app, &s)?; sent_pty_input = true; }
@@ -1334,12 +1349,16 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     };
                 }
             }
+            if mutates_state {
+                state_dirty = true;
+            }
         }
         // Check if all windows/panes have exited
         let (all_empty, any_pruned) = tree::reap_children(&mut app)?;
         if any_pruned {
-            // A pane exited naturally — resize remaining panes to fill the space
+            // A pane exited naturally - resize remaining panes to fill the space
             resize_all_panes(&mut app);
+            state_dirty = true;
         }
         if all_empty {
             let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
