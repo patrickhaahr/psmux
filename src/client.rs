@@ -64,6 +64,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
     let current_session = name.clone();
     let mut last_sent_size: (u16, u16) = (0, 0);
     let mut last_event_time = Instant::now();
+    let mut last_dump_time = Instant::now() - Duration::from_millis(250);
+    let mut force_dump = true;
     let mut last_tree: Vec<WinTree> = Vec::new();
     // Default prefix is Ctrl+B, updated dynamically from server config
     let mut prefix_key: (KeyCode, KeyModifiers) = (KeyCode::Char('b'), KeyModifiers::CONTROL);
@@ -91,12 +93,14 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
         // ── STEP 1: Poll events with adaptive timeout ────────────────────
         // Fast polling when typing (1ms), relaxed when idle (16ms ≈ 60fps)
         let since_last = last_event_time.elapsed().as_millis();
-        let poll_ms = if since_last < 50 { 1 } else if since_last < 200 { 5 } else { 16 };
+        let poll_ms = if since_last < 50 { 1 } else if since_last < 200 { 5 } else { 25 };
 
         let mut cmd_batch: Vec<String> = Vec::new();
+        let mut had_input_event = false;
         if event::poll(Duration::from_millis(poll_ms))? {
             last_event_time = Instant::now();
             loop {
+                had_input_event = true;
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat => {
                         let is_ctrl_q = (matches!(key.code, KeyCode::Char('q')) && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -300,11 +304,13 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
 
         // ── STEP 2: Send commands + dump-state on persistent connection ──
         // Send client-size if changed
+        let mut size_changed = false;
         {
             let ts = terminal.size()?;
             let new_size = (ts.width, ts.height.saturating_sub(1));
             if new_size != last_sent_size {
                 last_sent_size = new_size;
+                size_changed = true;
                 if writer.write_all(format!("client-size {} {}\n", new_size.0, new_size.1).as_bytes()).is_err() {
                     break; // Connection lost
                 }
@@ -316,6 +322,18 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
             if writer.write_all(cmd.as_bytes()).is_err() {
                 break; // Connection lost
             }
+        }
+
+        // Avoid full-state roundtrips every loop when idle.
+        let overlays_active = renaming || pane_renaming || chooser || tree_chooser || session_chooser;
+        let idle_refresh_ms = if overlays_active { 33 } else { 120 };
+        let should_dump = force_dump
+            || had_input_event
+            || size_changed
+            || !cmd_batch.is_empty()
+            || last_dump_time.elapsed() >= Duration::from_millis(idle_refresh_ms);
+        if !should_dump {
+            continue;
         }
 
         // Send dump-state and flush (server responds with one line of JSON)
@@ -331,7 +349,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
         }
         let state: DumpState = match serde_json::from_str(&buf) {
             Ok(s) => s,
-            Err(_) => continue, // Skip frame on parse error
+            Err(_) => {
+                force_dump = true;
+                continue; // Skip frame on parse error
+            }
         };
 
         let root = state.layout;
@@ -583,6 +604,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                 f.render_widget(para, overlay.inner(oa));
             }
         })?;
+        last_dump_time = Instant::now();
+        force_dump = false;
     }
 
     // Clean disconnect on persistent connection
