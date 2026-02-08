@@ -1,6 +1,7 @@
 use std::io;
 
 use serde::{Serialize, Deserialize};
+use unicode_width::UnicodeWidthStr;
 
 use crate::types::*;
 use crate::tree::*;
@@ -24,6 +25,20 @@ pub fn cycle_top_layout(app: &mut AppState) {
 pub struct CellJson { pub text: String, pub fg: String, pub bg: String, pub bold: bool, pub italic: bool, pub underline: bool, pub inverse: bool, pub dim: bool }
 
 #[derive(Serialize, Deserialize)]
+pub struct CellRunJson {
+    pub text: String,
+    pub fg: String,
+    pub bg: String,
+    pub flags: u8,
+    pub width: u16,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RowRunsJson {
+    pub runs: Vec<CellRunJson>,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum LayoutJson {
     #[serde(rename = "split")]
@@ -42,7 +57,10 @@ pub enum LayoutJson {
         sel_start_col: Option<u16>,
         sel_end_row: Option<u16>,
         sel_end_col: Option<u16>,
+        #[serde(default)]
         content: Vec<Vec<CellJson>>,
+        #[serde(default)]
+        rows_v2: Vec<RowRunsJson>,
     },
 }
 
@@ -50,33 +68,133 @@ pub fn dump_layout_json(app: &mut AppState) -> io::Result<String> {
     let in_copy_mode = matches!(app.mode, Mode::CopyMode);
     let scroll_offset = app.copy_scroll_offset;
     
-    fn build(node: &mut Node) -> LayoutJson {
+    fn build(node: &mut Node, cur_path: &mut Vec<usize>, active_path: &[usize], include_full_content: bool) -> LayoutJson {
         match node {
             Node::Split { kind, sizes, children } => {
                 let k = match *kind { LayoutKind::Horizontal => "Horizontal".to_string(), LayoutKind::Vertical => "Vertical".to_string() };
                 let mut ch: Vec<LayoutJson> = Vec::new();
-                for c in children.iter_mut() { ch.push(build(c)); }
+                for (i, c) in children.iter_mut().enumerate() {
+                    cur_path.push(i);
+                    ch.push(build(c, cur_path, active_path, include_full_content));
+                    cur_path.pop();
+                }
                 LayoutJson::Split { kind: k, sizes: sizes.clone(), children: ch }
             }
             Node::Leaf(p) => {
+                const FLAG_DIM: u8 = 1;
+                const FLAG_BOLD: u8 = 2;
+                const FLAG_ITALIC: u8 = 4;
+                const FLAG_UNDERLINE: u8 = 8;
+                const FLAG_INVERSE: u8 = 16;
+
                 let parser = p.term.lock().unwrap();
                 let screen = parser.screen();
                 let (cr, cc) = screen.cursor_position();
                 if let Some(t) = infer_title_from_prompt(&screen, p.last_rows, p.last_cols) { p.title = t; }
-                let mut lines: Vec<Vec<CellJson>> = Vec::new();
+                let need_full_content = include_full_content && *cur_path == active_path;
+                let mut lines: Vec<Vec<CellJson>> = if need_full_content {
+                    Vec::with_capacity(p.last_rows as usize)
+                } else {
+                    Vec::new()
+                };
+                let mut rows_v2: Vec<RowRunsJson> = Vec::with_capacity(p.last_rows as usize);
                 for r in 0..p.last_rows {
-                    let mut row: Vec<CellJson> = Vec::new();
-                    for c in 0..p.last_cols {
+                    let mut row: Vec<CellJson> = if need_full_content {
+                        Vec::with_capacity(p.last_cols as usize)
+                    } else {
+                        Vec::new()
+                    };
+                    let mut runs: Vec<CellRunJson> = Vec::new();
+                    let mut c = 0;
+                    while c < p.last_cols {
+                        let mut fg = "default".to_string();
+                        let mut bg = "default".to_string();
+                        let mut text = " ".to_string();
+                        let mut bold = false;
+                        let mut italic = false;
+                        let mut underline = false;
+                        let mut inverse = false;
+                        let mut dim = false;
                         if let Some(cell) = screen.cell(r, c) {
-                            let fg = crate::util::color_to_name(cell.fgcolor());
-                            let bg = crate::util::color_to_name(cell.bgcolor());
-                            let text = cell.contents().to_string();
-                            row.push(CellJson { text, fg, bg, bold: cell.bold(), italic: cell.italic(), underline: cell.underline(), inverse: cell.inverse(), dim: cell.dim() });
-                        } else {
-                            row.push(CellJson { text: " ".to_string(), fg: "default".to_string(), bg: "default".to_string(), bold: false, italic: false, underline: false, inverse: false, dim: false });
+                            fg = crate::util::color_to_name(cell.fgcolor());
+                            bg = crate::util::color_to_name(cell.bgcolor());
+                            text = cell.contents().to_string();
+                            if text.is_empty() {
+                                text = " ".to_string();
+                            }
+                            bold = cell.bold();
+                            italic = cell.italic();
+                            underline = cell.underline();
+                            inverse = cell.inverse();
+                            dim = cell.dim();
                         }
+
+                        let mut width = UnicodeWidthStr::width(text.as_str()) as u16;
+                        if width == 0 {
+                            width = 1;
+                        }
+
+                        let mut flags = 0u8;
+                        if dim { flags |= FLAG_DIM; }
+                        if bold { flags |= FLAG_BOLD; }
+                        if italic { flags |= FLAG_ITALIC; }
+                        if underline { flags |= FLAG_UNDERLINE; }
+                        if inverse { flags |= FLAG_INVERSE; }
+
+                        if let Some(last) = runs.last_mut() {
+                            if last.fg == fg && last.bg == bg && last.flags == flags {
+                                last.text.push_str(&text);
+                                last.width = last.width.saturating_add(width);
+                            } else {
+                                runs.push(CellRunJson { text: text.clone(), fg: fg.clone(), bg: bg.clone(), flags, width });
+                            }
+                        } else {
+                            runs.push(CellRunJson { text: text.clone(), fg: fg.clone(), bg: bg.clone(), flags, width });
+                        }
+
+                        if need_full_content {
+                            row.push(CellJson {
+                                text: text.clone(),
+                                fg: fg.clone(),
+                                bg: bg.clone(),
+                                bold,
+                                italic,
+                                underline,
+                                inverse,
+                                dim,
+                            });
+                            for _ in 1..width {
+                                row.push(CellJson {
+                                    text: String::new(),
+                                    fg: fg.clone(),
+                                    bg: bg.clone(),
+                                    bold,
+                                    italic,
+                                    underline,
+                                    inverse,
+                                    dim,
+                                });
+                            }
+                        }
+
+                        c = c.saturating_add(width.max(1));
                     }
-                    lines.push(row);
+                    if need_full_content {
+                        while row.len() < p.last_cols as usize {
+                            row.push(CellJson {
+                                text: " ".to_string(),
+                                fg: "default".to_string(),
+                                bg: "default".to_string(),
+                                bold: false,
+                                italic: false,
+                                underline: false,
+                                inverse: false,
+                                dim: false,
+                            });
+                        }
+                        lines.push(row);
+                    }
+                    rows_v2.push(RowRunsJson { runs });
                 }
                 LayoutJson::Leaf {
                     id: p.id,
@@ -92,12 +210,14 @@ pub fn dump_layout_json(app: &mut AppState) -> io::Result<String> {
                     sel_end_row: None,
                     sel_end_col: None,
                     content: lines,
+                    rows_v2,
                 }
             }
         }
     }
     let win = &mut app.windows[app.active_idx];
-    let mut root = build(&mut win.root);
+    let mut path = Vec::new();
+    let mut root = build(&mut win.root, &mut path, &win.active_path, in_copy_mode);
     // Mark the active pane and set copy mode info
     fn mark_active(
         node: &mut LayoutJson,

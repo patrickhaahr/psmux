@@ -397,6 +397,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                         sel_end_row,
                         sel_end_col,
                         content,
+                        rows_v2,
                     } => {
                         let pane_block = if *copy_mode && *active {
                             Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)).title("[copy mode]")
@@ -407,42 +408,68 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                         };
                         let inner = pane_block.inner(area);
                         let mut lines: Vec<Line> = Vec::new();
-                        for r in 0..inner.height.min(content.len() as u16) {
-                            let mut spans: Vec<Span> = Vec::new();
-                            let row = &content[r as usize];
-                            let max_c = inner.width.min(row.len() as u16);
-                            let mut c: u16 = 0;
-                            while c < max_c {
-                                let cell = &row[c as usize];
-                                let mut fg = map_color(&cell.fg);
-                                let mut bg = map_color(&cell.bg);
-                                if cell.inverse { std::mem::swap(&mut fg, &mut bg); }
-                                let in_selection = if *copy_mode && *active {
-                                    if let (Some(sr), Some(sc), Some(er), Some(ec)) = (sel_start_row, sel_start_col, sel_end_row, sel_end_col) {
-                                        r >= *sr && r <= *er && c >= *sc && c <= *ec
-                                    } else { false }
-                                } else { false };
-                                if *active && dim_preds && (r > *cursor_row || (r == *cursor_row && c >= *cursor_col)) {
-                                    fg = dim_color(fg);
+                        let use_full_cells = *copy_mode && *active && !content.is_empty();
+                        if use_full_cells || rows_v2.is_empty() {
+                            for r in 0..inner.height.min(content.len() as u16) {
+                                let mut spans: Vec<Span> = Vec::new();
+                                let row = &content[r as usize];
+                                let max_c = inner.width.min(row.len() as u16);
+                                let mut c: u16 = 0;
+                                while c < max_c {
+                                    let cell = &row[c as usize];
+                                    let mut fg = map_color(&cell.fg);
+                                    let mut bg = map_color(&cell.bg);
+                                    if cell.inverse { std::mem::swap(&mut fg, &mut bg); }
+                                    let in_selection = if *copy_mode && *active {
+                                        if let (Some(sr), Some(sc), Some(er), Some(ec)) = (sel_start_row, sel_start_col, sel_end_row, sel_end_col) {
+                                            r >= *sr && r <= *er && c >= *sc && c <= *ec
+                                        } else { false }
+                                    } else { false };
+                                    if *active && dim_preds && (r > *cursor_row || (r == *cursor_row && c >= *cursor_col)) {
+                                        fg = dim_color(fg);
+                                    }
+                                    let mut style = Style::default().fg(fg).bg(bg);
+                                    if in_selection {
+                                        style = style.fg(Color::Black).bg(Color::LightYellow);
+                                    }
+                                    if cell.dim { style = style.add_modifier(Modifier::DIM); }
+                                    if cell.bold { style = style.add_modifier(Modifier::BOLD); }
+                                    if cell.italic { style = style.add_modifier(Modifier::ITALIC); }
+                                    if cell.underline { style = style.add_modifier(Modifier::UNDERLINED); }
+                                    let text = if cell.text.is_empty() { " ".to_string() } else { cell.text.clone() };
+                                    let char_width = unicode_width::UnicodeWidthStr::width(text.as_str()) as u16;
+                                    spans.push(Span::styled(text, style));
+                                    if char_width >= 2 {
+                                        c += 2; // skip continuation cell after wide character
+                                    } else {
+                                        c += 1;
+                                    }
                                 }
-                                let mut style = Style::default().fg(fg).bg(bg);
-                                if in_selection {
-                                    style = style.fg(Color::Black).bg(Color::LightYellow);
-                                }
-                                if cell.dim { style = style.add_modifier(Modifier::DIM); }
-                                if cell.bold { style = style.add_modifier(Modifier::BOLD); }
-                                if cell.italic { style = style.add_modifier(Modifier::ITALIC); }
-                                if cell.underline { style = style.add_modifier(Modifier::UNDERLINED); }
-                                let text = if cell.text.is_empty() { " ".to_string() } else { cell.text.clone() };
-                                let char_width = unicode_width::UnicodeWidthStr::width(text.as_str()) as u16;
-                                spans.push(Span::styled(text, style));
-                                if char_width >= 2 {
-                                    c += 2; // skip continuation cell after wide character
-                                } else {
-                                    c += 1;
-                                }
+                                lines.push(Line::from(spans));
                             }
-                            lines.push(Line::from(spans));
+                        } else {
+                            for r in 0..inner.height.min(rows_v2.len() as u16) {
+                                let mut spans: Vec<Span> = Vec::new();
+                                let mut c: u16 = 0;
+                                for run in &rows_v2[r as usize].runs {
+                                    if c >= inner.width { break; }
+                                    let mut fg = map_color(&run.fg);
+                                    let mut bg = map_color(&run.bg);
+                                    if run.flags & 16 != 0 { std::mem::swap(&mut fg, &mut bg); }
+                                    if *active && dim_preds && (r > *cursor_row || (r == *cursor_row && c >= *cursor_col)) {
+                                        fg = dim_color(fg);
+                                    }
+                                    let mut style = Style::default().fg(fg).bg(bg);
+                                    if run.flags & 1 != 0 { style = style.add_modifier(Modifier::DIM); }
+                                    if run.flags & 2 != 0 { style = style.add_modifier(Modifier::BOLD); }
+                                    if run.flags & 4 != 0 { style = style.add_modifier(Modifier::ITALIC); }
+                                    if run.flags & 8 != 0 { style = style.add_modifier(Modifier::UNDERLINED); }
+                                    let text = if run.text.is_empty() { " ".to_string() } else { run.text.clone() };
+                                    spans.push(Span::styled(text, style));
+                                    c = c.saturating_add(run.width.max(1));
+                                }
+                                lines.push(Line::from(spans));
+                            }
                         }
                         f.render_widget(pane_block, area);
                         f.render_widget(Clear, inner);
