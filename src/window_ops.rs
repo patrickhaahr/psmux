@@ -9,6 +9,7 @@ use ratatui::prelude::*;
 use crate::types::*;
 use crate::tree::*;
 use crate::pane::{create_window, detect_shell};
+use crate::copy_mode::{scroll_copy_up, scroll_copy_down};
 
 pub fn toggle_zoom(app: &mut AppState) {
     let win = &mut app.windows[app.active_idx];
@@ -54,8 +55,58 @@ pub fn remote_mouse_down(app: &mut AppState, x: u16, y: u16) {
 
 pub fn remote_mouse_drag(app: &mut AppState, x: u16, y: u16) { let win = &mut app.windows[app.active_idx]; if let Some(d) = &app.drag { adjust_split_sizes(&mut win.root, d, x, y); } }
 
-pub fn remote_scroll_up(app: &mut AppState) { let win = &mut app.windows[app.active_idx]; if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) { let _ = write!(p.master, "\x1b[A"); } }
-pub fn remote_scroll_down(app: &mut AppState) { let win = &mut app.windows[app.active_idx]; if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) { let _ = write!(p.master, "\x1b[B"); } }
+fn wheel_cell_for_area(area: Rect, x: u16, y: u16) -> (u16, u16) {
+    // Convert global terminal coordinates to 1-based pane-local coordinates.
+    let inner_x = area.x.saturating_add(1);
+    let inner_y = area.y.saturating_add(1);
+    let inner_w = area.width.saturating_sub(2).max(1);
+    let inner_h = area.height.saturating_sub(2).max(1);
+
+    let col = x
+        .saturating_sub(inner_x)
+        .min(inner_w.saturating_sub(1))
+        .saturating_add(1);
+    let row = y
+        .saturating_sub(inner_y)
+        .min(inner_h.saturating_sub(1))
+        .saturating_add(1);
+    (col, row)
+}
+
+fn remote_scroll_wheel(app: &mut AppState, x: u16, y: u16, up: bool) {
+    if matches!(app.mode, Mode::CopyMode) {
+        if up { scroll_copy_up(app, 3); } else { scroll_copy_down(app, 3); }
+        return;
+    }
+
+    let win = &mut app.windows[app.active_idx];
+    let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
+    compute_rects(&win.root, app.last_window_area, &mut rects);
+
+    let mut target_area: Option<Rect> = None;
+    for (path, area) in &rects {
+        if area.contains(ratatui::layout::Position { x, y }) {
+            win.active_path = path.clone();
+            target_area = Some(*area);
+            break;
+        }
+    }
+    if target_area.is_none() {
+        target_area = rects
+            .iter()
+            .find(|(path, _)| *path == win.active_path)
+            .map(|(_, area)| *area);
+    }
+
+    let (col, row) = target_area.map_or((1, 1), |area| wheel_cell_for_area(area, x, y));
+    let code = if up { 64 } else { 65 };
+    if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
+        let _ = write!(p.master, "\x1b[<{};{};{}M", code, col, row);
+    }
+}
+
+pub fn remote_scroll_up(app: &mut AppState, x: u16, y: u16) { remote_scroll_wheel(app, x, y, true); }
+pub fn remote_scroll_down(app: &mut AppState, x: u16, y: u16) { remote_scroll_wheel(app, x, y, false); }
 
 pub fn swap_pane(app: &mut AppState, dir: FocusDir) {
     let win = &mut app.windows[app.active_idx];

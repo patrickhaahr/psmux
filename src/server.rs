@@ -327,8 +327,16 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     "mouse-up" => {
                         if args.len()>=2 { if let (Ok(x),Ok(y))=(args[0].parse::<u16>(),args[1].parse::<u16>()) { let _ = tx.send(CtrlReq::MouseUp(x,y)); } }
                     }
-                    "scroll-up" => { let _ = tx.send(CtrlReq::ScrollUp); }
-                    "scroll-down" => { let _ = tx.send(CtrlReq::ScrollDown); }
+                    "scroll-up" => {
+                        let x = args.get(0).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+                        let y = args.get(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+                        let _ = tx.send(CtrlReq::ScrollUp(x, y));
+                    }
+                    "scroll-down" => {
+                        let x = args.get(0).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+                        let y = args.get(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+                        let _ = tx.send(CtrlReq::ScrollDown(x, y));
+                    }
                     "next-window" => { let _ = tx.send(CtrlReq::NextWindow); }
                     "previous-window" => { let _ = tx.send(CtrlReq::PrevWindow); }
                     "rename-window" => { if let Some(name) = args.get(0) { let _ = tx.send(CtrlReq::RenameWindow((*name).to_string())); } }
@@ -730,8 +738,8 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 CtrlReq::MouseDown(x,y) => { remote_mouse_down(&mut app, x, y); }
                 CtrlReq::MouseDrag(x,y) => { remote_mouse_drag(&mut app, x, y); }
                 CtrlReq::MouseUp(_,_) => { app.drag = None; }
-                CtrlReq::ScrollUp => { remote_scroll_up(&mut app); }
-                CtrlReq::ScrollDown => { remote_scroll_down(&mut app); }
+                CtrlReq::ScrollUp(x, y) => { remote_scroll_up(&mut app, x, y); }
+                CtrlReq::ScrollDown(x, y) => { remote_scroll_down(&mut app, x, y); }
                 CtrlReq::NextWindow => { if !app.windows.is_empty() { app.active_idx = (app.active_idx + 1) % app.windows.len(); } }
                 CtrlReq::PrevWindow => { if !app.windows.is_empty() { app.active_idx = (app.active_idx + app.windows.len() - 1) % app.windows.len(); } }
                 CtrlReq::RenameWindow(name) => { let win = &mut app.windows[app.active_idx]; win.name = name; }

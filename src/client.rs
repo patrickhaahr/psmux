@@ -114,6 +114,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                                 KeyCode::Char('[') | KeyCode::Char('{') => { cmd_batch.push("copy-enter\n".into()); }
                                 KeyCode::Char('n') => { cmd_batch.push("next-window\n".into()); }
                                 KeyCode::Char('p') => { cmd_batch.push("previous-window\n".into()); }
+                                KeyCode::Char(d) if d.is_ascii_digit() => {
+                                    let idx = d.to_digit(10).unwrap() as usize;
+                                    cmd_batch.push(format!("select-window {}\n", idx));
+                                }
                                 KeyCode::Char('o') => { cmd_batch.push("select-pane -t :.+\n".into()); }
                                 KeyCode::Up => { cmd_batch.push("select-pane -U\n".into()); }
                                 KeyCode::Down => { cmd_batch.push("select-pane -D\n".into()); }
@@ -278,8 +282,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                             MouseEventKind::Down(MouseButton::Left) => { cmd_batch.push(format!("mouse-down {} {}\n", me.column, me.row)); }
                             MouseEventKind::Drag(MouseButton::Left) => { cmd_batch.push(format!("mouse-drag {} {}\n", me.column, me.row)); }
                             MouseEventKind::Up(MouseButton::Left) => { cmd_batch.push(format!("mouse-up {} {}\n", me.column, me.row)); }
-                            MouseEventKind::ScrollUp => { cmd_batch.push("scroll-up\n".into()); }
-                            MouseEventKind::ScrollDown => { cmd_batch.push("scroll-down\n".into()); }
+                            MouseEventKind::ScrollUp => { cmd_batch.push(format!("scroll-up {} {}\n", me.column, me.row)); }
+                            MouseEventKind::ScrollDown => { cmd_batch.push(format!("scroll-down {} {}\n", me.column, me.row)); }
                             _ => {}
                         }
                     }

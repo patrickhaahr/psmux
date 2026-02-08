@@ -438,8 +438,8 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 CtrlReq::MouseDown(x,y) => { remote_mouse_down(&mut app, x, y); }
                 CtrlReq::MouseDrag(x,y) => { remote_mouse_drag(&mut app, x, y); }
                 CtrlReq::MouseUp(_,_) => { app.drag = None; }
-                CtrlReq::ScrollUp => { remote_scroll_up(&mut app); }
-                CtrlReq::ScrollDown => { remote_scroll_down(&mut app); }
+                CtrlReq::ScrollUp(x, y) => { remote_scroll_up(&mut app, x, y); }
+                CtrlReq::ScrollDown(x, y) => { remote_scroll_down(&mut app, x, y); }
                 CtrlReq::NextWindow => { if !app.windows.is_empty() { app.active_idx = (app.active_idx + 1) % app.windows.len(); } }
                 CtrlReq::PrevWindow => { if !app.windows.is_empty() { app.active_idx = (app.active_idx + app.windows.len() - 1) % app.windows.len(); } }
                 CtrlReq::RenameWindow(name) => { let win = &mut app.windows[app.active_idx]; win.name = name; }

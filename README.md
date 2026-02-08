@@ -85,6 +85,20 @@ Download the latest `.zip` from [GitHub Releases](https://github.com/marlocarlo/
 ```powershell
 git clone https://github.com/marlocarlo/psmux.git
 cd psmux
+cargo build --release
+```
+
+Built binaries:
+
+```text
+target\release\psmux.exe
+target\release\pmux.exe
+target\release\tmux.exe
+```
+
+Optional (install from local source into Cargo bin path):
+
+```powershell
 cargo install --path .
 ```
 
