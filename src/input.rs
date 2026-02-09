@@ -457,82 +457,21 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                 }
             }
 
-            // Forward mouse down to child PTY (SGR encoding: button 0 = left press)
-            if !on_border {
-                if let Some(area) = active_area {
-                    let (col, row) = pane_cell(area, me.column, me.row);
-                    if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                        let _ = write!(active.master, "\x1b[<0;{};{}M", col, row);
-                    }
-                }
-            }
+
         }
-        MouseEventKind::Down(MouseButton::Right) => {
-            // Forward right-click to child PTY (SGR encoding: button 2)
-            if let Some(area) = active_area {
-                let (col, row) = pane_cell(area, me.column, me.row);
-                if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                    let _ = write!(active.master, "\x1b[<2;{};{}M", col, row);
-                }
-            }
-        }
-        MouseEventKind::Down(MouseButton::Middle) => {
-            // Forward middle-click to child PTY (SGR encoding: button 1)
-            if let Some(area) = active_area {
-                let (col, row) = pane_cell(area, me.column, me.row);
-                if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                    let _ = write!(active.master, "\x1b[<1;{};{}M", col, row);
-                }
-            }
-        }
+        MouseEventKind::Down(MouseButton::Right) => {}
+        MouseEventKind::Down(MouseButton::Middle) => {}
         MouseEventKind::Up(MouseButton::Left) => {
             app.drag = None;
-            // Forward mouse up to child PTY (SGR encoding: button 0 = left release)
-            if let Some(area) = active_area {
-                let (col, row) = pane_cell(area, me.column, me.row);
-                if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                    let _ = write!(active.master, "\x1b[<0;{};{}m", col, row);
-                }
-            }
         }
-        MouseEventKind::Up(MouseButton::Right) => {
-            if let Some(area) = active_area {
-                let (col, row) = pane_cell(area, me.column, me.row);
-                if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                    let _ = write!(active.master, "\x1b[<2;{};{}m", col, row);
-                }
-            }
-        }
-        MouseEventKind::Up(MouseButton::Middle) => {
-            if let Some(area) = active_area {
-                let (col, row) = pane_cell(area, me.column, me.row);
-                if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                    let _ = write!(active.master, "\x1b[<1;{};{}m", col, row);
-                }
-            }
-        }
+        MouseEventKind::Up(MouseButton::Right) => {}
+        MouseEventKind::Up(MouseButton::Middle) => {}
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(d) = &app.drag {
                 adjust_split_sizes(&mut win.root, d, me.column, me.row);
-            } else {
-                // Forward mouse drag to child PTY (SGR encoding: button 32 = motion + left held)
-                if let Some(area) = active_area {
-                    let (col, row) = pane_cell(area, me.column, me.row);
-                    if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                        let _ = write!(active.master, "\x1b[<32;{};{}M", col, row);
-                    }
-                }
             }
         }
-        MouseEventKind::Moved => {
-            // Forward mouse motion to child PTY (SGR encoding: button 35 = motion, no button)
-            if let Some(area) = active_area {
-                let (col, row) = pane_cell(area, me.column, me.row);
-                if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                    let _ = write!(active.master, "\x1b[<35;{};{}M", col, row);
-                }
-            }
-        }
+        MouseEventKind::Moved => {}
         MouseEventKind::ScrollUp => {
             if matches!(app.mode, Mode::CopyMode) {
                 scroll_copy_up(app, 3);

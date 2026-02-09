@@ -82,16 +82,7 @@ pub fn remote_mouse_down(app: &mut AppState, x: u16, y: u16) {
         }
     }
 
-    // Forward left-click to child PTY
-    if !on_border {
-        if let Some(area) = active_area {
-            let col = x.saturating_sub(area.x) + 1;
-            let row = y.saturating_sub(area.y) + 1;
-            if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                let _ = write!(active.master, "\x1b[<0;{};{}M", col, row);
-            }
-        }
-    }
+
 }
 
 pub fn remote_mouse_drag(app: &mut AppState, x: u16, y: u16) {
@@ -113,15 +104,6 @@ pub fn remote_mouse_drag(app: &mut AppState, x: u16, y: u16) {
 
     if let Some(d) = &app.drag {
         adjust_split_sizes(&mut win.root, d, x, y);
-    } else {
-        // Forward drag to child PTY (SGR: button 32 = motion + left held)
-        if let Some(area) = rects.iter().find(|(path, _)| *path == win.active_path).map(|(_, a)| *a) {
-            let col = x.saturating_sub(area.x) + 1;
-            let row = y.saturating_sub(area.y) + 1;
-            if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-                let _ = write!(active.master, "\x1b[<32;{};{}M", col, row);
-            }
-        }
     }
 }
 
@@ -144,46 +126,16 @@ pub fn remote_mouse_up(app: &mut AppState, x: u16, y: u16) {
     }
 
     app.drag = None;
-
-    // Forward mouse release to child PTY (SGR: button 0 release = lowercase m)
-    if let Some(area) = rects.iter().find(|(path, _)| *path == win.active_path).map(|(_, a)| *a) {
-        let col = x.saturating_sub(area.x) + 1;
-        let row = y.saturating_sub(area.y) + 1;
-        if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-            let _ = write!(active.master, "\x1b[<0;{};{}m", col, row);
-        }
-    }
 }
 
 /// Forward a non-left mouse button press/release to the child PTY.
-/// `button`: 1 = middle, 2 = right (SGR encoding).
-/// `press`: true = press (M), false = release (m).
-pub fn remote_mouse_button(app: &mut AppState, x: u16, y: u16, button: u8, press: bool) {
-    let win = &mut app.windows[app.active_idx];
-    let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-    compute_rects(&win.root, app.last_window_area, &mut rects);
-    if let Some(area) = rects.iter().find(|(path, _)| *path == win.active_path).map(|(_, a)| *a) {
-        let col = x.saturating_sub(area.x) + 1;
-        let row = y.saturating_sub(area.y) + 1;
-        let end_char = if press { 'M' } else { 'm' };
-        if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-            let _ = write!(active.master, "\x1b[<{};{};{}{}", button, col, row, end_char);
-        }
-    }
+/// Currently a no-op — mouse passthrough disabled until child app mouse mode detection is implemented.
+pub fn remote_mouse_button(_app: &mut AppState, _x: u16, _y: u16, _button: u8, _press: bool) {
 }
 
-/// Forward mouse motion (no button held) to the child PTY.
-pub fn remote_mouse_motion(app: &mut AppState, x: u16, y: u16) {
-    let win = &mut app.windows[app.active_idx];
-    let mut rects: Vec<(Vec<usize>, Rect)> = Vec::new();
-    compute_rects(&win.root, app.last_window_area, &mut rects);
-    if let Some(area) = rects.iter().find(|(path, _)| *path == win.active_path).map(|(_, a)| *a) {
-        let col = x.saturating_sub(area.x) + 1;
-        let row = y.saturating_sub(area.y) + 1;
-        if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
-            let _ = write!(active.master, "\x1b[<35;{};{}M", col, row);
-        }
-    }
+/// Forward mouse motion to the child PTY.
+/// Currently a no-op — mouse passthrough disabled until child app mouse mode detection is implemented.
+pub fn remote_mouse_motion(_app: &mut AppState, _x: u16, _y: u16) {
 }
 
 fn wheel_cell_for_area(area: Rect, x: u16, y: u16) -> (u16, u16) {
