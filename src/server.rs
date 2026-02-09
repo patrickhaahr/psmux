@@ -36,6 +36,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
         mode: Mode::Passthrough,
         escape_time_ms: 500,
         prefix_key: (crossterm::event::KeyCode::Char('b'), crossterm::event::KeyModifiers::CONTROL),
+        prediction_dimming: crate::rendering::dim_predictions_enabled(),
         drag: None,
         // Use a reasonable default size so pane switching works even when detached
         last_window_area: Rect { x: 0, y: 0, width: 120, height: 30 },
@@ -731,12 +732,13 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     let tree_json = list_tree_json(&app)?;
                     let prefix_str = format_key_binding(&app.prefix_key);
                     let combined = format!(
-                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{}}}",
+                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{}}}",
                         layout_json,
                         windows_json,
                         prefix_str,
                         tree_json,
-                        app.window_base_index
+                        app.window_base_index,
+                        app.prediction_dimming
                     );
                     cached_dump_state = combined.clone();
                     last_dump_build = std::time::Instant::now();
@@ -1046,6 +1048,9 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                                 app.escape_time_ms = ms;
                             }
                         }
+                        "prediction-dimming" | "dim-predictions" => {
+                            app.prediction_dimming = !matches!(value.as_str(), "off" | "false" | "0");
+                        }
                         _ => {}
                     }
                 }
@@ -1057,6 +1062,10 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     output.push_str(&format!("mouse {}\n", if app.mouse_enabled { "on" } else { "off" }));
                     output.push_str(&format!("prefix {}\n", format_key_binding(&app.prefix_key)));
                     output.push_str(&format!("escape-time {}\n", app.escape_time_ms));
+                    output.push_str(&format!(
+                        "prediction-dimming {}\n",
+                        if app.prediction_dimming { "on" } else { "off" }
+                    ));
                     let _ = resp.send(output);
                 }
                 CtrlReq::SourceFile(path) => {
@@ -1082,6 +1091,9 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                                                 "mouse" => { app.mouse_enabled = *val == "on" || *val == "true" || *val == "1"; }
                                                 "prefix" => { if let Some(kc) = parse_key_string(val) { app.prefix_key = kc; } }
                                                 "escape-time" => { if let Ok(ms) = val.parse::<u64>() { app.escape_time_ms = ms; } }
+                                                "prediction-dimming" | "dim-predictions" => {
+                                                    app.prediction_dimming = !matches!(*val, "off" | "false" | "0");
+                                                }
                                                 _ => {}
                                             }
                                         }

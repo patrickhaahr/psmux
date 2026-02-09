@@ -76,6 +76,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
     struct WinStatus { id: usize, name: String, active: bool }
     
     fn default_base_index() -> usize { 1 }
+    fn default_prediction_dimming() -> bool { dim_predictions_enabled() }
 
     #[derive(serde::Deserialize)]
     struct DumpState {
@@ -87,6 +88,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
         tree: Vec<WinTree>,
         #[serde(default = "default_base_index")]
         base_index: usize,
+        #[serde(default = "default_prediction_dimming")]
+        prediction_dimming: bool,
     }
 
     loop {
@@ -359,6 +362,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
         let windows = state.windows;
         last_tree = state.tree;
         let base_index = state.base_index;
+        let dim_preds = state.prediction_dimming;
 
         // Update prefix key from server config (if provided)
         if let Some(ref prefix_str) = state.prefix {
@@ -389,6 +393,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                         cols: _,
                         cursor_row,
                         cursor_col,
+                        alternate_screen,
                         active,
                         copy_mode,
                         scroll_offset,
@@ -425,7 +430,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                                             r >= *sr && r <= *er && c >= *sc && c <= *ec
                                         } else { false }
                                     } else { false };
-                                    if *active && dim_preds && (r > *cursor_row || (r == *cursor_row && c >= *cursor_col)) {
+                                    if *active && dim_preds && !*alternate_screen
+                                        && (r > *cursor_row || (r == *cursor_row && c >= *cursor_col))
+                                    {
                                         fg = dim_color(fg);
                                     }
                                     let mut style = Style::default().fg(fg).bg(bg);
@@ -456,7 +463,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                                     let mut fg = map_color(&run.fg);
                                     let mut bg = map_color(&run.bg);
                                     if run.flags & 16 != 0 { std::mem::swap(&mut fg, &mut bg); }
-                                    if *active && dim_preds && (r > *cursor_row || (r == *cursor_row && c >= *cursor_col)) {
+                                    if *active && dim_preds && !*alternate_screen
+                                        && (r > *cursor_row || (r == *cursor_row && c >= *cursor_col))
+                                    {
                                         fg = dim_color(fg);
                                     }
                                     let mut style = Style::default().fg(fg).bg(bg);
@@ -509,7 +518,6 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                 }
             }
 
-            let dim_preds = dim_predictions_enabled();
             render_json(f, &root, chunks[0], dim_preds);
 
             if session_chooser {

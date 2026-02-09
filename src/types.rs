@@ -109,6 +109,7 @@ pub struct AppState {
     pub mode: Mode,
     pub escape_time_ms: u64,
     pub prefix_key: (KeyCode, KeyModifiers),
+    pub prediction_dimming: bool,
     pub drag: Option<DragState>,
     pub last_window_area: Rect,
     pub mouse_enabled: bool,

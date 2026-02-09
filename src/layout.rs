@@ -50,6 +50,8 @@ pub enum LayoutJson {
         cols: u16,
         cursor_row: u16,
         cursor_col: u16,
+        #[serde(default)]
+        alternate_screen: bool,
         active: bool,
         copy_mode: bool,
         scroll_offset: usize,
@@ -90,6 +92,7 @@ pub fn dump_layout_json(app: &mut AppState) -> io::Result<String> {
                 let parser = p.term.lock().unwrap();
                 let screen = parser.screen();
                 let (cr, cc) = screen.cursor_position();
+                let alternate_screen = screen.alternate_screen();
                 if let Some(t) = infer_title_from_prompt(&screen, p.last_rows, p.last_cols) { p.title = t; }
                 let need_full_content = include_full_content && *cur_path == active_path;
                 let mut lines: Vec<Vec<CellJson>> = if need_full_content {
@@ -202,6 +205,7 @@ pub fn dump_layout_json(app: &mut AppState) -> io::Result<String> {
                     cols: p.last_cols,
                     cursor_row: cr,
                     cursor_col: cc,
+                    alternate_screen,
                     active: false,
                     copy_mode: false,
                     scroll_offset: 0,

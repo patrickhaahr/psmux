@@ -379,6 +379,9 @@ set -g status-right "%H:%M"
 # Cursor style: block, underline, or bar
 set -g cursor-style bar
 set -g cursor-blink on
+
+# Prediction dimming is enabled by default. Disable it for apps like Neovim.
+set -g prediction-dimming off
 ```
 
 ### Environment Variables
@@ -393,7 +396,13 @@ $env:PSMUX_DIM_PREDICTIONS = "0"
 
 ### Neovim Rendering Workaround
 
-If Neovim looks slow inside psmux or shows a "shadow" effect until you move the cursor, disable psmux prediction dimming:
+If Neovim looks slow inside psmux or shows a "shadow" effect until you move the cursor, disable psmux prediction dimming in `~/.psmux.conf`:
+
+```tmux
+set -g prediction-dimming off
+```
+
+You can also disable it for the current shell only:
 
 ```powershell
 $env:PSMUX_DIM_PREDICTIONS = "0"

@@ -107,6 +107,9 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
                 app.escape_time_ms = ms;
             }
         }
+        "prediction-dimming" | "dim-predictions" => {
+            app.prediction_dimming = !matches!(value, "off" | "false" | "0");
+        }
         "cursor-style" => env::set_var("PSMUX_CURSOR_STYLE", value),
         "cursor-blink" => env::set_var("PSMUX_CURSOR_BLINK", if matches!(value, "on"|"true"|"1") { "1" } else { "0" }),
         "status" => {}
