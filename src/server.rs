@@ -236,6 +236,20 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     }
                     i += 1;
                 }
+                // Build args without -t and its value so command handlers get clean positional args
+                let args: Vec<&str> = {
+                    let mut filtered = Vec::new();
+                    let mut i = 0;
+                    while i < args.len() {
+                        if args[i] == "-t" {
+                            i += 2; // skip -t and its value
+                            continue;
+                        }
+                        filtered.push(args[i]);
+                        i += 1;
+                    }
+                    filtered
+                };
                 if let Some(wid) = target_win { let _ = tx.send(CtrlReq::FocusWindow(wid)); }
                 if let Some(pid) = target_pane { 
                     if pane_is_id {
