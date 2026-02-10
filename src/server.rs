@@ -784,6 +784,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
     let mut cached_prefix_str = String::new();
     let mut cached_base_index: usize = 0;
     let mut cached_pred_dim: bool = false;
+    let mut cached_status_style = String::new();
     // Reusable buffer for building the combined JSON envelope.
     let mut combined_buf = String::with_capacity(32768);
     // Deferred dump-state: when we send PTY input in the same batch as a
@@ -829,13 +830,15 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     cached_prefix_str = format_key_binding(&app.prefix_key);
                     cached_base_index = app.window_base_index;
                     cached_pred_dim = app.prediction_dimming;
+                    cached_status_style = app.status_style.clone();
                     meta_dirty = false;
                 }
                 let layout_json = dump_layout_json_fast(&mut app)?;
                 combined_buf.clear();
+                let ss_escaped = cached_status_style.replace('"', "\\\"" );
                 let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
-                    "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{}}}",
-                    layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim
+                    "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\"}}",
+                    layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped
                 ));
                 cached_dump_state.clear();
                 cached_dump_state.push_str(&combined_buf);
@@ -927,13 +930,15 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         cached_prefix_str = format_key_binding(&app.prefix_key);
                         cached_base_index = app.window_base_index;
                         cached_pred_dim = app.prediction_dimming;
+                        cached_status_style = app.status_style.clone();
                         meta_dirty = false;
                     }
                     let layout_json = dump_layout_json_fast(&mut app)?;
                     combined_buf.clear();
+                    let ss_escaped = cached_status_style.replace('"', "\\\"" );
                     let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
-                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{}}}",
-                        layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim
+                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\"}}",
+                        layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped
                     ));
                     cached_dump_state.clear();
                     cached_dump_state.push_str(&combined_buf);

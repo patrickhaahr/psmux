@@ -15,6 +15,62 @@ use crate::copy_mode::{copy_to_system_clipboard, read_from_system_clipboard};
 use crate::layout::RowRunsJson;
 use crate::tree::split_with_gaps;
 
+/// Parse a tmux-style color name to a ratatui Color.
+/// Supports: "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+/// "default", "colour0"-"colour255", "#rrggbb", and "brightX" variants.
+fn parse_tmux_color(s: &str) -> Option<Color> {
+    match s.trim().to_lowercase().as_str() {
+        "default" | "" => None,
+        "black" => Some(Color::Black),
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "white" => Some(Color::White),
+        "brightblack" => Some(Color::DarkGray),
+        "brightred" => Some(Color::LightRed),
+        "brightgreen" => Some(Color::LightGreen),
+        "brightyellow" => Some(Color::LightYellow),
+        "brightblue" => Some(Color::LightBlue),
+        "brightmagenta" => Some(Color::LightMagenta),
+        "brightcyan" => Some(Color::LightCyan),
+        "brightwhite" => Some(Color::Gray),
+        s if s.starts_with("colour") || s.starts_with("color") => {
+            let num_part = if s.starts_with("colour") { &s[6..] } else { &s[5..] };
+            num_part.parse::<u8>().ok().map(Color::Indexed)
+        }
+        s if s.starts_with('#') && s.len() == 7 => {
+            let r = u8::from_str_radix(&s[1..3], 16).ok()?;
+            let g = u8::from_str_radix(&s[3..5], 16).ok()?;
+            let b = u8::from_str_radix(&s[5..7], 16).ok()?;
+            Some(Color::Rgb(r, g, b))
+        }
+        _ => None,
+    }
+}
+
+/// Parse a tmux status-style string like "fg=white,bg=blue,bold" into (fg, bg, bold).
+fn parse_tmux_style(style: &str) -> (Option<Color>, Option<Color>, bool) {
+    let mut fg = None;
+    let mut bg = None;
+    let mut bold = false;
+    for part in style.split(',') {
+        let part = part.trim();
+        if let Some(val) = part.strip_prefix("fg=") {
+            fg = parse_tmux_color(val);
+        } else if let Some(val) = part.strip_prefix("bg=") {
+            bg = parse_tmux_color(val);
+        } else if part == "bold" {
+            bold = true;
+        } else if part == "nobold" {
+            bold = false;
+        }
+    }
+    (fg, bg, bold)
+}
+
 /// Extract selected text from the layout tree given absolute terminal coordinates.
 /// Computes pane areas via the same Layout splitting render_json uses, then reads
 /// characters from the run-length-encoded rows_v2 data.
@@ -242,6 +298,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
     let mut prefix_key: (KeyCode, KeyModifiers) = (KeyCode::Char('b'), KeyModifiers::CONTROL);
     // Precompute the raw control character for the default prefix
     let mut prefix_raw_char: Option<char> = Some('\x02');
+    // Status bar style from server (parsed from tmux status-style format)
+    let mut status_fg: Color = Color::Black;
+    let mut status_bg: Color = Color::Green;
+    let mut status_bold: bool = false;
 
     #[derive(serde::Deserialize, Default)]
     struct WinStatus { id: usize, name: String, active: bool }
@@ -261,6 +321,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
         base_index: usize,
         #[serde(default = "default_prediction_dimming")]
         prediction_dimming: bool,
+        #[serde(default)]
+        status_style: Option<String>,
     }
 
     let mut cmd_batch: Vec<String> = Vec::new();
@@ -318,6 +380,20 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                             || prefix_raw_char.map_or(false, |c| matches!(key.code, KeyCode::Char(ch) if ch == c));
 
                         if is_ctrl_q { quit = true; }
+                        // Overlay Esc must be checked BEFORE selection-Esc so that
+                        // pressing Esc always closes the active overlay first.
+                        else if matches!(key.code, KeyCode::Esc) && (command_input || renaming || pane_renaming || chooser || tree_chooser || session_chooser) {
+                            command_input = false;
+                            renaming = false;
+                            pane_renaming = false;
+                            chooser = false;
+                            tree_chooser = false;
+                            session_chooser = false;
+                            // Also clear any lingering selection
+                            rsel_start = None;
+                            rsel_end = None;
+                            selection_changed = true;
+                        }
                         else if rsel_start.is_some() && matches!(key.code, KeyCode::Esc) {
                             // Escape clears any active text selection
                             rsel_start = None;
@@ -333,9 +409,16 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                                 KeyCode::Char('x') => { cmd_batch.push("kill-pane\n".into()); }
                                 KeyCode::Char('&') => { cmd_batch.push("kill-window\n".into()); }
                                 KeyCode::Char('z') => { cmd_batch.push("zoom-pane\n".into()); }
-                                KeyCode::Char('[') | KeyCode::Char('{') => { cmd_batch.push("copy-enter\n".into()); }
+                                KeyCode::Char('[') => { cmd_batch.push("copy-enter\n".into()); }
+                                KeyCode::Char(']') => { cmd_batch.push("paste-buffer\n".into()); }
+                                KeyCode::Char('{') => { cmd_batch.push("swap-pane -U\n".into()); }
+                                KeyCode::Char('}') => { cmd_batch.push("swap-pane -D\n".into()); }
                                 KeyCode::Char('n') => { cmd_batch.push("next-window\n".into()); }
                                 KeyCode::Char('p') => { cmd_batch.push("previous-window\n".into()); }
+                                KeyCode::Char('l') => { cmd_batch.push("last-window\n".into()); }
+                                KeyCode::Char(';') => { cmd_batch.push("last-pane\n".into()); }
+                                KeyCode::Char(' ') => { cmd_batch.push("next-layout\n".into()); }
+                                KeyCode::Char('!') => { cmd_batch.push("break-pane\n".into()); }
                                 KeyCode::Char(d) if d.is_ascii_digit() => {
                                     let idx = d.to_digit(10).unwrap() as usize;
                                     cmd_batch.push(format!("select-window {}\n", idx));
@@ -730,6 +813,16 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
             }
         }
 
+        // Update status-style from server config (if provided)
+        if let Some(ref ss) = state.status_style {
+            if !ss.is_empty() {
+                let (fg, bg, bold) = parse_tmux_style(ss);
+                status_fg = fg.unwrap_or(Color::Black);
+                status_bg = bg.unwrap_or(Color::Green);
+                status_bold = bold;
+            }
+        }
+
         // ── STEP 3: Render ───────────────────────────────────────────────
         let sel_s = rsel_start;
         let sel_e = rsel_end;
@@ -1019,8 +1112,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                     }
                 }
             }
+            let sb_fg = status_fg;
+            let sb_bg = status_bg;
+            let sb_base = if status_bold {
+                Style::default().fg(sb_fg).bg(sb_bg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(sb_fg).bg(sb_bg)
+            };
             let mut status_spans: Vec<Span> = vec![
-                Span::styled(format!("[{}] ", name), Style::default().fg(Color::Black).bg(Color::Green)),
+                Span::styled(format!("[{}] ", name), sb_base),
             ];
             for (i, w) in windows.iter().enumerate() {
                 let display_idx = i + base_index;
@@ -1035,11 +1135,11 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                 } else {
                     status_spans.push(Span::styled(
                         format!("{}: {} ", display_idx, w.name),
-                        Style::default().fg(Color::Black).bg(Color::Green),
+                        sb_base,
                     ));
                 }
             }
-            let status_bar = Paragraph::new(Line::from(status_spans)).style(Style::default().bg(Color::Green).fg(Color::Black));
+            let status_bar = Paragraph::new(Line::from(status_spans)).style(sb_base);
             f.render_widget(Clear, chunks[1]);
             f.render_widget(status_bar, chunks[1]);
             if renaming {
