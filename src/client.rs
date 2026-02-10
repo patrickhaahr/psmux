@@ -671,7 +671,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
         // rate-limits to 1 outstanding request (round-trip = ~5-10ms).
         // No artificial echo wait — the server processes keys before dumps
         // in each batch, so ConPTY gets the input before serialization.
-        let overlays_active = renaming || pane_renaming || chooser || tree_chooser || session_chooser;
+        let overlays_active = command_input || renaming || pane_renaming || chooser || tree_chooser || session_chooser;
         let should_dump = if force_dump || size_changed {
             true
         } else if typing_active {
@@ -688,11 +688,12 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
 
         // ── STEP 3: Render if we have a frame ────────────────────────────
         // Also render if selection changed (for highlight overlay) even without new frame
-        if !got_frame && !selection_changed { continue; }
+        // Always render when overlays are active (command prompt, rename, choosers)
+        if !got_frame && !selection_changed && !overlays_active { continue; }
 
         // Skip parse + render when the raw JSON is identical to the previous
-        // frame AND selection hasn't changed.
-        if dump_buf == prev_dump_buf && !selection_changed {
+        // frame AND selection hasn't changed AND no overlays are active.
+        if dump_buf == prev_dump_buf && !selection_changed && !overlays_active {
             last_dump_time = Instant::now();
             continue;
         }
