@@ -18,7 +18,7 @@ use crate::types::*;
 use crate::tree::*;
 use crate::pane::{create_window, split_active_with_command, kill_active_pane};
 use crate::input::{handle_key, handle_mouse};
-use crate::rendering::{render_window, parse_status, centered_rect};
+use crate::rendering::{render_window, parse_status, centered_rect, parse_tmux_style};
 use crate::config::load_config;
 use crate::cli::parse_target;
 use crate::copy_mode::*;
@@ -185,12 +185,31 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 Mode::BufferChooser { .. } => "BUF",
             };
             let time_str = Local::now().format("%H:%M").to_string();
-            let status_spans = parse_status(&app.status_left, &app, &time_str);
-            let mut right_spans = parse_status(&app.status_right, &app, &time_str);
+
+            // Parse status-style to get the base status bar style (tmux default: bg=green,fg=black)
+            let base_status_style = parse_tmux_style(&app.status_style);
+            
+            // Expand status-left using the format engine for full format var support
+            let expanded_left = crate::format::expand_format(&app.status_left, &app);
+            let status_spans = parse_status(&expanded_left, &app, &time_str);
+            
+            // Expand status-right using the format engine
+            let expanded_right = crate::format::expand_format(&app.status_right, &app);
+            let mut right_spans = parse_status(&expanded_right, &app, &time_str);
 
             // Build status bar: left status + window tabs + right-aligned time
-            let mut combined: Vec<Span<'static>> = status_spans;
-            combined.push(Span::raw(" "));
+            let left_style = if app.status_left_style.is_empty() {
+                base_status_style
+            } else {
+                parse_tmux_style(&app.status_left_style)
+            };
+            let mut combined: Vec<Span<'static>> = status_spans.into_iter().map(|s| {
+                // Apply left style as base, but let inline #[...] overrides win
+                if s.style == Style::default() {
+                    Span::styled(s.content.into_owned(), left_style)
+                } else { s }
+            }).collect();
+            combined.push(Span::styled(" ".to_string(), base_status_style));
 
             // Track x position for tab click detection
             let status_x = chunks[1].x;
@@ -199,34 +218,98 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 cursor_x += s.content.len() as u16;
             }
 
-            // Render window tabs with position tracking
+            // Parse window-status styles
+            let ws_style = if app.window_status_style.is_empty() {
+                base_status_style
+            } else {
+                parse_tmux_style(&app.window_status_style)
+            };
+            let wsc_style = if app.window_status_current_style.is_empty() {
+                // tmux default: no special current style, just same as status
+                base_status_style
+            } else {
+                parse_tmux_style(&app.window_status_current_style)
+            };
+            let wsa_style = if app.window_status_activity_style.is_empty() {
+                base_status_style.add_modifier(Modifier::REVERSED)
+            } else {
+                parse_tmux_style(&app.window_status_activity_style)
+            };
+            let wsb_style = if app.window_status_bell_style.is_empty() {
+                base_status_style.add_modifier(Modifier::REVERSED)
+            } else {
+                parse_tmux_style(&app.window_status_bell_style)
+            };
+            let wsl_style = if app.window_status_last_style.is_empty() {
+                base_status_style
+            } else {
+                parse_tmux_style(&app.window_status_last_style)
+            };
+
+            // Render window tabs using window-status-format / window-status-current-format
             let mut tab_pos: Vec<(usize, u16, u16)> = Vec::new();
-            for (i, w) in app.windows.iter().enumerate() {
-                let display_idx = i + app.window_base_index;
-                let label = format!(" {} ", display_idx);
+            let sep = &app.window_status_separator;
+            for (i, _w) in app.windows.iter().enumerate() {
+                if i > 0 {
+                    combined.push(Span::styled(sep.clone(), base_status_style));
+                    cursor_x += sep.len() as u16;
+                }
+                let fmt = if i == app.active_idx {
+                    &app.window_status_current_format
+                } else {
+                    &app.window_status_format
+                };
+                let label = crate::format::expand_format_for_window(fmt, &app, i);
                 let start_x = cursor_x;
                 cursor_x += label.len() as u16;
                 tab_pos.push((i, start_x, cursor_x));
-                if i == app.active_idx {
-                    combined.push(Span::styled(label, Style::default().bg(Color::Black).fg(Color::Green).add_modifier(Modifier::BOLD)));
+                
+                // Choose style based on window state
+                let win = &app.windows[i];
+                let style = if i == app.active_idx {
+                    wsc_style
+                } else if win.bell_flag {
+                    wsb_style
+                } else if win.activity_flag {
+                    wsa_style
+                } else if i == app.last_window_idx {
+                    wsl_style
                 } else {
-                    combined.push(Span::styled(label, Style::default().bg(Color::Green).fg(Color::Black)));
-                }
+                    ws_style
+                };
+                combined.push(Span::styled(label, style));
             }
             app.tab_positions = tab_pos;
 
-            // Right-align the time
-            combined.push(Span::raw(" "));
-            combined.append(&mut right_spans);
-            let status_bar = Paragraph::new(Line::from(combined)).style(Style::default().bg(Color::Green).fg(Color::Black));
+            // Right-align the status-right
+            let right_style = if app.status_right_style.is_empty() {
+                base_status_style
+            } else {
+                parse_tmux_style(&app.status_right_style)
+            };
+            combined.push(Span::styled(" ".to_string(), base_status_style));
+            for s in right_spans.drain(..) {
+                if s.style == Style::default() {
+                    combined.push(Span::styled(s.content.into_owned(), right_style));
+                } else {
+                    combined.push(s);
+                }
+            }
+            let status_bar = Paragraph::new(Line::from(combined)).style(base_status_style);
             f.render_widget(Clear, chunks[1]);
             f.render_widget(status_bar, chunks[1]);
 
-            if let Mode::CommandPrompt { input } = &app.mode {
-                let overlay = Paragraph::new(format!(":{}", input)).block(Block::default().borders(Borders::ALL).title("command"));
-                let oa = centered_rect(80, 3, area);
-                f.render_widget(Clear, oa);
-                f.render_widget(overlay, oa);
+            // Command prompt — render at bottom (tmux style), not centered popup
+            if let Mode::CommandPrompt { input, cursor } = &app.mode {
+                let msg_style = parse_tmux_style(&app.message_command_style);
+                let prompt_text = format!(":{}", input);
+                let prompt_area = chunks[1]; // Replace the status bar line
+                let para = Paragraph::new(prompt_text).style(msg_style);
+                f.render_widget(Clear, prompt_area);
+                f.render_widget(para, prompt_area);
+                // Place cursor at the right position in the prompt
+                let cx = prompt_area.x + 1 + *cursor as u16; // +1 for ':'
+                f.set_cursor(cx, prompt_area.y);
             }
 
             if let Mode::WindowChooser { selected, ref tree } = app.mode {

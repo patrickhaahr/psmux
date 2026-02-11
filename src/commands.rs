@@ -306,7 +306,7 @@ pub fn execute_action(app: &mut AppState, action: &Action) -> io::Result<bool> {
 }
 
 pub fn execute_command_prompt(app: &mut AppState) -> io::Result<()> {
-    let cmdline = match &app.mode { Mode::CommandPrompt { input } => input.clone(), _ => String::new() };
+    let cmdline = match &app.mode { Mode::CommandPrompt { input, .. } => input.clone(), _ => String::new() };
     app.mode = Mode::Passthrough;
     let parts: Vec<&str> = cmdline.split_whitespace().collect();
     if parts.is_empty() { return Ok(()); }
@@ -613,7 +613,7 @@ pub fn execute_command_string(app: &mut AppState, cmd: &str) -> io::Result<()> {
         "command-prompt" => {
             // Support -I initial_text, -p prompt (ignored), -1 (ignored)
             let initial = parts.windows(2).find(|w| w[0] == "-I").map(|w| w[1].to_string()).unwrap_or_default();
-            app.mode = Mode::CommandPrompt { input: initial };
+            app.mode = Mode::CommandPrompt { input: initial.clone(), cursor: initial.len() };
         }
         "paste-buffer" | "pasteb" => {
             paste_latest(app)?;

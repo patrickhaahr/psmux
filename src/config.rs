@@ -130,7 +130,7 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
                 app.prefix_key = key;
             }
         }
-        "prefix2" => {}
+        "prefix2" => { app.environment.insert(key.to_string(), value.to_string()); }
         "escape-time" => {
             if let Ok(ms) = value.parse::<u64>() {
                 app.escape_time_ms = ms;
@@ -150,8 +150,10 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
         "status-position" => {
             app.status_position = value.to_string();
         }
-        "status-interval" => {}
-        "status-justify" => {}
+        "status-interval" => {
+            if let Ok(n) = value.parse::<u64>() { app.status_interval = n; }
+        }
+        "status-justify" => { app.status_justify = value.to_string(); }
         "base-index" => {
             if let Ok(idx) = value.parse::<usize>() {
                 app.window_base_index = idx;
@@ -210,7 +212,7 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
         "set-titles-string" => {
             app.set_titles_string = value.to_string();
         }
-        "status-keys" => {}
+        "status-keys" => { app.environment.insert(key.to_string(), value.to_string()); }
         "pane-border-style" => { app.pane_border_style = value.to_string(); }
         "pane-active-border-style" => { app.pane_active_border_style = value.to_string(); }
         "window-status-format" => { app.window_status_format = value.to_string(); }
@@ -222,18 +224,27 @@ pub fn parse_option_value(app: &mut AppState, rest: &str, _is_global: bool) {
         "synchronize-panes" => {
             app.sync_input = matches!(value, "on" | "true" | "1");
         }
-        "allow-rename" => {}
-        "terminal-overrides" => {}
-        "default-terminal" => {}
-        "update-environment" => {}
+        "allow-rename" => { app.environment.insert(key.to_string(), value.to_string()); }
+        "terminal-overrides" => { app.environment.insert(key.to_string(), value.to_string()); }
+        "default-terminal" => { app.environment.insert(key.to_string(), value.to_string()); }
+        "update-environment" => { app.environment.insert(key.to_string(), value.to_string()); }
         "bell-action" => { app.bell_action = value.to_string(); }
         "visual-bell" => { app.visual_bell = matches!(value, "on" | "true" | "1"); }
-        "activity-action" => {}
-        "silence-action" => {}
+        "activity-action" => { app.environment.insert(key.to_string(), value.to_string()); }
+        "silence-action" => { app.environment.insert(key.to_string(), value.to_string()); }
         "monitor-silence" => {
             if let Ok(n) = value.parse::<u64>() { app.monitor_silence = n; }
         }
-        "message-style" | "message-command-style" => { app.environment.insert(key.to_string(), value.to_string()); }
+        "message-style" => { app.message_style = value.to_string(); }
+        "message-command-style" => { app.message_command_style = value.to_string(); }
+        "mode-style" => { app.mode_style = value.to_string(); }
+        "window-status-style" => { app.window_status_style = value.to_string(); }
+        "window-status-current-style" => { app.window_status_current_style = value.to_string(); }
+        "window-status-activity-style" => { app.window_status_activity_style = value.to_string(); }
+        "window-status-bell-style" => { app.window_status_bell_style = value.to_string(); }
+        "window-status-last-style" => { app.window_status_last_style = value.to_string(); }
+        "status-left-style" => { app.status_left_style = value.to_string(); }
+        "status-right-style" => { app.status_right_style = value.to_string(); }
         "clock-mode-colour" | "clock-mode-style" => { app.environment.insert(key.to_string(), value.to_string()); }
         "pane-border-format" | "pane-border-status" => { app.environment.insert(key.to_string(), value.to_string()); }
         "popup-style" | "popup-border-style" | "popup-border-lines" => { app.environment.insert(key.to_string(), value.to_string()); }

@@ -104,7 +104,7 @@ pub struct WaitChannel {
 pub enum Mode {
     Passthrough,
     Prefix { armed_at: Instant },
-    CommandPrompt { input: String },
+    CommandPrompt { input: String, cursor: usize },
     WindowChooser { selected: usize, tree: Vec<crate::session::TreeEntry> },
     RenamePrompt { input: String },
     RenameSessionPrompt { input: String },
@@ -249,6 +249,26 @@ pub struct AppState {
     pub window_status_current_format: String,
     /// window-status-separator: between window status entries
     pub window_status_separator: String,
+    /// window-status-style: style for inactive window status
+    pub window_status_style: String,
+    /// window-status-current-style: style for active window status
+    pub window_status_current_style: String,
+    /// window-status-activity-style: style for windows with activity
+    pub window_status_activity_style: String,
+    /// window-status-bell-style: style for windows with bell
+    pub window_status_bell_style: String,
+    /// window-status-last-style: style for last active window
+    pub window_status_last_style: String,
+    /// message-style: style for status-line messages
+    pub message_style: String,
+    /// message-command-style: style for command prompt
+    pub message_command_style: String,
+    /// mode-style: style for copy-mode highlighting
+    pub mode_style: String,
+    /// status-left-style: style for status-left area
+    pub status_left_style: String,
+    /// status-right-style: style for status-right area
+    pub status_right_style: String,
     /// Marked pane: (window_index, pane_id) — set by select-pane -m
     pub marked_pane: Option<(usize, usize)>,
     /// monitor-silence: seconds of silence before flagging (0 = off)
@@ -257,6 +277,14 @@ pub struct AppState {
     pub bell_action: String,
     /// visual-bell: show visual indicator on bell
     pub visual_bell: bool,
+    /// Command prompt history
+    pub command_history: Vec<String>,
+    /// Command prompt history index (for up/down navigation)
+    pub command_history_idx: usize,
+    /// status-interval: seconds between status-line refreshes (default 15)
+    pub status_interval: u64,
+    /// status-justify: left, centre, right, absolute-centre
+    pub status_justify: String,
 }
 
 impl AppState {
@@ -277,8 +305,8 @@ impl AppState {
             last_window_area: Rect { x: 0, y: 0, width: 120, height: 30 },
             mouse_enabled: true,
             paste_buffers: Vec::new(),
-            status_left: "psmux:#I".to_string(),
-            status_right: "%H:%M".to_string(),
+            status_left: "[#S] ".to_string(),
+            status_right: "\"#{=21:pane_title}\" %H:%M %d-%b-%y".to_string(),
             window_base_index: 1,
             copy_anchor: None,
             copy_pos: None,
@@ -314,7 +342,7 @@ impl AppState {
             mode_keys: "emacs".to_string(),
             status_visible: true,
             status_position: "bottom".to_string(),
-            status_style: String::new(),
+            status_style: "bg=green,fg=black".to_string(),
             default_shell: String::new(),
             word_separators: " -_@".to_string(),
             renumber_windows: false,
@@ -328,13 +356,27 @@ impl AppState {
             environment: std::collections::HashMap::new(),
             pane_border_style: String::new(),
             pane_active_border_style: "fg=green".to_string(),
-            window_status_format: "#I:#W#F".to_string(),
-            window_status_current_format: "#I:#W#F".to_string(),
+            window_status_format: "#I:#W#{?window_flags,#{window_flags}, }".to_string(),
+            window_status_current_format: "#I:#W#{?window_flags,#{window_flags}, }".to_string(),
             window_status_separator: " ".to_string(),
+            window_status_style: String::new(),
+            window_status_current_style: String::new(),
+            window_status_activity_style: "reverse".to_string(),
+            window_status_bell_style: "reverse".to_string(),
+            window_status_last_style: String::new(),
+            message_style: "bg=yellow,fg=black".to_string(),
+            message_command_style: "bg=black,fg=yellow".to_string(),
+            mode_style: "bg=yellow,fg=black".to_string(),
+            status_left_style: String::new(),
+            status_right_style: String::new(),
             marked_pane: None,
             monitor_silence: 0,
             bell_action: "any".to_string(),
             visual_bell: false,
+            command_history: Vec::new(),
+            command_history_idx: 0,
+            status_interval: 15,
+            status_justify: "left".to_string(),
         }
     }
 }

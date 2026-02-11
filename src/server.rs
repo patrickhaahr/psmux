@@ -1158,6 +1158,21 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
             "window-status-format" => app.window_status_format.clone(),
             "window-status-current-format" => app.window_status_current_format.clone(),
             "window-status-separator" => app.window_status_separator.clone(),
+            "window-status-style" => app.window_status_style.clone(),
+            "window-status-current-style" => app.window_status_current_style.clone(),
+            "window-status-activity-style" => app.window_status_activity_style.clone(),
+            "window-status-bell-style" => app.window_status_bell_style.clone(),
+            "window-status-last-style" => app.window_status_last_style.clone(),
+            "message-style" => app.message_style.clone(),
+            "message-command-style" => app.message_command_style.clone(),
+            "mode-style" => app.mode_style.clone(),
+            "status-left-style" => app.status_left_style.clone(),
+            "status-right-style" => app.status_right_style.clone(),
+            "status-interval" => app.status_interval.to_string(),
+            "status-justify" => app.status_justify.clone(),
+            "bell-action" => app.bell_action.clone(),
+            "visual-bell" => if app.visual_bell { "on".into() } else { "off".into() },
+            "monitor-silence" => app.monitor_silence.to_string(),
             _ => {
                 // Support @user-options (stored in environment)
                 if name.starts_with('@') {
@@ -2207,6 +2222,34 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     if !app.status_style.is_empty() {
                         output.push_str(&format!("status-style \"{}\"\n", app.status_style));
                     }
+                    if !app.status_left_style.is_empty() {
+                        output.push_str(&format!("status-left-style \"{}\"\n", app.status_left_style));
+                    }
+                    if !app.status_right_style.is_empty() {
+                        output.push_str(&format!("status-right-style \"{}\"\n", app.status_right_style));
+                    }
+                    output.push_str(&format!("status-interval {}\n", app.status_interval));
+                    output.push_str(&format!("status-justify {}\n", app.status_justify));
+                    output.push_str(&format!("window-status-format \"{}\"\n", app.window_status_format));
+                    output.push_str(&format!("window-status-current-format \"{}\"\n", app.window_status_current_format));
+                    if !app.window_status_style.is_empty() {
+                        output.push_str(&format!("window-status-style \"{}\"\n", app.window_status_style));
+                    }
+                    if !app.window_status_current_style.is_empty() {
+                        output.push_str(&format!("window-status-current-style \"{}\"\n", app.window_status_current_style));
+                    }
+                    if !app.window_status_activity_style.is_empty() {
+                        output.push_str(&format!("window-status-activity-style \"{}\"\n", app.window_status_activity_style));
+                    }
+                    if !app.message_style.is_empty() {
+                        output.push_str(&format!("message-style \"{}\"\n", app.message_style));
+                    }
+                    if !app.message_command_style.is_empty() {
+                        output.push_str(&format!("message-command-style \"{}\"\n", app.message_command_style));
+                    }
+                    if !app.mode_style.is_empty() {
+                        output.push_str(&format!("mode-style \"{}\"\n", app.mode_style));
+                    }
                     // Include @user-options (used by plugins)
                     for (key, val) in &app.environment {
                         if key.starts_with('@') {
@@ -2760,11 +2803,21 @@ fn apply_set_option(app: &mut AppState, option: &str, value: &str, quiet: bool) 
         "window-status-format" => { app.window_status_format = value.to_string(); }
         "window-status-current-format" => { app.window_status_current_format = value.to_string(); }
         "window-status-separator" => { app.window_status_separator = value.to_string(); }
-        "window-status-style" | "window-status-current-style" | "window-status-activity-style"
-        | "window-status-bell-style" | "window-status-last-style"
-        | "mode-style" | "message-style" | "message-command-style"
-        | "main-pane-width" | "main-pane-height" => {
-            // Store as environment for format access
+        "window-status-style" => { app.window_status_style = value.to_string(); }
+        "window-status-current-style" => { app.window_status_current_style = value.to_string(); }
+        "window-status-activity-style" => { app.window_status_activity_style = value.to_string(); }
+        "window-status-bell-style" => { app.window_status_bell_style = value.to_string(); }
+        "window-status-last-style" => { app.window_status_last_style = value.to_string(); }
+        "mode-style" => { app.mode_style = value.to_string(); }
+        "message-style" => { app.message_style = value.to_string(); }
+        "message-command-style" => { app.message_command_style = value.to_string(); }
+        "status-left-style" => { app.status_left_style = value.to_string(); }
+        "status-right-style" => { app.status_right_style = value.to_string(); }
+        "status-justify" => { app.status_justify = value.to_string(); }
+        "status-interval" => {
+            if let Ok(n) = value.parse::<u64>() { app.status_interval = n; }
+        }
+        "main-pane-width" | "main-pane-height" => {
             app.environment.insert(format!("@{}", option), value.to_string());
         }
         _ => {
