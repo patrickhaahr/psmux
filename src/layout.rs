@@ -111,9 +111,9 @@ pub fn dump_layout_json(app: &mut AppState) -> io::Result<String> {
                 };
                 // Throttle infer_title_from_prompt — expensive scan, only needed for display
                 let now = std::time::Instant::now();
-                if now.duration_since(p.last_title_check).as_millis() >= 500 {
+                if now.duration_since(p.last_infer_title).as_millis() >= 500 {
                     if let Some(t) = infer_title_from_prompt(&screen, p.last_rows, p.last_cols) { p.title = t; }
-                    p.last_title_check = now;
+                    p.last_infer_title = now;
                 }
                 let need_full_content = include_full_content && *cur_path == active_path;
                 let mut lines: Vec<Vec<CellJson>> = if need_full_content {
@@ -433,11 +433,11 @@ pub fn dump_layout_json_fast(app: &mut AppState) -> io::Result<String> {
 
                 // Throttled title inference
                 let now = std::time::Instant::now();
-                if now.duration_since(p.last_title_check).as_millis() >= 500 {
+                if now.duration_since(p.last_infer_title).as_millis() >= 500 {
                     if let Some(t) = infer_title_from_prompt(screen, p.last_rows, p.last_cols) {
                         p.title = t;
                     }
-                    p.last_title_check = now;
+                    p.last_infer_title = now;
                 }
 
                 // ── leaf header ──────────────────────────────────────

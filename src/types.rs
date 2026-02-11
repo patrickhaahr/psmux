@@ -23,8 +23,10 @@ pub struct Pane {
     /// output is processed.  Checked by the server to know when the screen
     /// has actually changed (avoids serialising stale frames).
     pub data_version: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Timestamp of the last infer_title_from_prompt call (throttled to ~2/s).
+    /// Timestamp of the last auto-rename foreground-process check (throttled to ~1/s).
     pub last_title_check: Instant,
+    /// Timestamp of the last infer_title_from_prompt call in layout serialisation (throttled to ~2/s).
+    pub last_infer_title: Instant,
     /// True when the child process has exited but remain-on-exit keeps the pane visible.
     pub dead: bool,
 }

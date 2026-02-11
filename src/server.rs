@@ -1403,10 +1403,6 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 }
                 CtrlReq::DumpState(resp) => {
                     // ── Automatic rename: resolve foreground process ──
-                    // Runs on every DumpState request (~50ms idle) but
-                    // throttled per-pane to 1s.  Placed BEFORE the cache
-                    // check so that a name change sets state_dirty and
-                    // the stale cache is bypassed this same request.
                     {
                         let in_copy = matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. });
                         if app.automatic_rename && !in_copy {
@@ -1414,9 +1410,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                                 if win.manual_rename { continue; }
                                 if let Some(p) = crate::tree::active_pane_mut(&mut win.root, &win.active_path) {
                                     if p.dead { continue; }
-                                    if p.last_title_check.elapsed() < std::time::Duration::from_millis(1000) {
-                                        continue;
-                                    }
+                                    if p.last_title_check.elapsed().as_millis() < 1000 { continue; }
                                     p.last_title_check = std::time::Instant::now();
                                     if p.child_pid.is_none() {
                                         p.child_pid = unsafe { crate::platform::mouse_inject::get_child_pid(&*p.child) };
