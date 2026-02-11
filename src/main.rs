@@ -1010,8 +1010,8 @@ fn main() -> io::Result<()> {
                 send_control(format!("{}\n", cmd_str))?;
                 return Ok(());
             }
-            // show-options / show - Show options
-            "show-options" | "show" => {
+            // show-options / show / show-window-options / showw - Show options
+            "show-options" | "show" | "show-window-options" | "showw" => {
                 let cmd_str: String = cmd_args.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join(" ");
                 let resp = send_control_with_response(format!("{}\n", cmd_str))?;
                 print!("{}", resp);
@@ -1283,6 +1283,12 @@ fn main() -> io::Result<()> {
             // clock-mode - Display a clock
             "clock-mode" => {
                 send_control("clock-mode\n".to_string())?;
+                return Ok(());
+            }
+            // choose-buffer - List paste buffers interactively
+            "choose-buffer" | "chooseb" => {
+                let resp = send_control_with_response("choose-buffer\n".to_string())?;
+                print!("{}", resp);
                 return Ok(());
             }
             // set-environment / setenv - Set environment variable

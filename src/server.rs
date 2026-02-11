@@ -260,9 +260,31 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     "kill-pane" | "killp" => { let _ = tx.send(CtrlReq::KillPane); }
                     "capture-pane" | "capturep" => {
                         let print_stdout = args.iter().any(|a| *a == "-p");
+                        let join_lines = args.iter().any(|a| *a == "-J");
+                        // Parse -S start and -E end (negative = scrollback offset, - = entire scrollback)
+                        let s_arg = args.windows(2).find(|w| w[0] == "-S").map(|w| w[1]);
+                        let e_arg = args.windows(2).find(|w| w[0] == "-E").map(|w| w[1]);
                         let (rtx, rrx) = mpsc::channel::<String>();
-                        let _ = tx.send(CtrlReq::CapturePane(rtx));
-                        if let Ok(text) = rrx.recv() {
+                        if s_arg.is_some() || e_arg.is_some() {
+                            let start: Option<u16> = match s_arg {
+                                Some("-") => Some(0), // entire scrollback start
+                                Some(v) => v.parse::<u16>().ok(),
+                                None => None,
+                            };
+                            let end: Option<u16> = match e_arg {
+                                Some("-") => None, // to end of visible
+                                Some(v) => v.parse::<u16>().ok(),
+                                None => None,
+                            };
+                            let _ = tx.send(CtrlReq::CapturePaneRange(rtx, start, end));
+                        } else {
+                            let _ = tx.send(CtrlReq::CapturePane(rtx));
+                        }
+                        if let Ok(mut text) = rrx.recv() {
+                            if join_lines {
+                                // Remove trailing whitespace from each line (join wrapped lines)
+                                text = text.lines().map(|l| l.trim_end()).collect::<Vec<_>>().join("\n");
+                            }
                             if print_stdout {
                                 let _ = write!(write_stream, "{}\n", text);
                                 let _ = write_stream.flush();
@@ -413,13 +435,22 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         let _ = tx.send(CtrlReq::SwapPane(dir.to_string()));
                     }
                     "resize-pane" | "resizep" => {
-                        let amount = args.iter().find(|a| a.parse::<u16>().is_ok()).and_then(|s| s.parse::<u16>().ok()).unwrap_or(1);
-                        let dir = if args.iter().any(|a| *a == "-U") { "U" }
-                            else if args.iter().any(|a| *a == "-D") { "D" }
-                            else if args.iter().any(|a| *a == "-L") { "L" }
-                            else if args.iter().any(|a| *a == "-R") { "R" }
-                            else { "D" };
-                        let _ = tx.send(CtrlReq::ResizePane(dir.to_string(), amount));
+                        // Check for absolute resize (-x N or -y N)
+                        let abs_x = args.windows(2).find(|w| w[0] == "-x").and_then(|w| w[1].parse::<u16>().ok());
+                        let abs_y = args.windows(2).find(|w| w[0] == "-y").and_then(|w| w[1].parse::<u16>().ok());
+                        if let Some(xv) = abs_x {
+                            let _ = tx.send(CtrlReq::ResizePaneAbsolute("x".to_string(), xv));
+                        } else if let Some(yv) = abs_y {
+                            let _ = tx.send(CtrlReq::ResizePaneAbsolute("y".to_string(), yv));
+                        } else {
+                            let amount = args.iter().find(|a| a.parse::<u16>().is_ok()).and_then(|s| s.parse::<u16>().ok()).unwrap_or(1);
+                            let dir = if args.iter().any(|a| *a == "-U") { "U" }
+                                else if args.iter().any(|a| *a == "-D") { "D" }
+                                else if args.iter().any(|a| *a == "-L") { "L" }
+                                else if args.iter().any(|a| *a == "-R") { "R" }
+                                else { "D" };
+                            let _ = tx.send(CtrlReq::ResizePane(dir.to_string(), amount));
+                        }
                     }
                     "set-buffer" => {
                         let content = args.iter().filter(|a| !a.starts_with('-')).cloned().collect::<Vec<&str>>().join(" ");
@@ -445,6 +476,12 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         if !persistent { break; }
                     }
                     "delete-buffer" => { let _ = tx.send(CtrlReq::DeleteBuffer); }
+                    "choose-buffer" => {
+                        let (rtx, rrx) = mpsc::channel::<String>();
+                        let _ = tx.send(CtrlReq::ChooseBuffer(rtx));
+                        if let Ok(text) = rrx.recv() { let _ = write!(write_stream, "{}\n", text); let _ = write_stream.flush(); }
+                        if !persistent { break; }
+                    }
                     "display-message" | "display" => {
                         let fmt = args.iter().filter(|a| !a.starts_with('-')).cloned().collect::<Vec<&str>>().join(" ");
                         let (rtx, rrx) = mpsc::channel::<String>();
@@ -523,10 +560,32 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                             let _ = tx.send(CtrlReq::SetOption(option, value));
                         }
                     }
-                    "show-options" | "show" => {
-                        let (rtx, rrx) = mpsc::channel::<String>();
-                        let _ = tx.send(CtrlReq::ShowOptions(rtx));
-                        if let Ok(text) = rrx.recv() { let _ = write!(write_stream, "{}\n", text); let _ = write_stream.flush(); }
+                    "show-options" | "show" | "show-window-options" | "showw" => {
+                        let has_v = args.iter().any(|a| *a == "-v");
+                        let has_q = args.iter().any(|a| *a == "-q");
+                        let opt_name: Option<&str> = args.iter()
+                            .filter(|a| !a.starts_with('-'))
+                            .copied()
+                            .last();
+                        if has_v || (opt_name.is_some() && !has_q) {
+                            // Single-option query: show-options -v <name> or show <name>
+                            if let Some(name) = opt_name {
+                                let (rtx, rrx) = mpsc::channel::<String>();
+                                let _ = tx.send(CtrlReq::ShowOptionValue(rtx, name.to_string()));
+                                if let Ok(text) = rrx.recv() {
+                                    if has_v {
+                                        let _ = write!(write_stream, "{}\n", text);
+                                    } else {
+                                        let _ = write!(write_stream, "{} {}\n", name, text);
+                                    }
+                                    let _ = write_stream.flush();
+                                }
+                            }
+                        } else {
+                            let (rtx, rrx) = mpsc::channel::<String>();
+                            let _ = tx.send(CtrlReq::ShowOptions(rtx));
+                            if let Ok(text) = rrx.recv() { let _ = write!(write_stream, "{}\n", text); let _ = write_stream.flush(); }
+                        }
                         if !persistent { break; }
                     }
                     "source-file" | "source" => {
@@ -710,7 +769,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         if !persistent { break; }
                     }
                     "copy-mode" => { let _ = tx.send(CtrlReq::CopyEnter); }
-                    "clock-mode" => {} // not implemented but accepted
+                    "clock-mode" => { let _ = tx.send(CtrlReq::ClockMode); }
                     "show-messages" | "showmsgs" => {} // not implemented but accepted
                     "command-prompt" => {} // accepted (client handles internally)
                     "run-shell" | "run" => {
@@ -848,6 +907,42 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
         v
     }
 
+    /// Get a single option's value by name (for `show-options -v name`).
+    fn get_option_value(app: &AppState, name: &str) -> String {
+        match name {
+            "prefix" => format_key_binding(&app.prefix_key),
+            "base-index" => app.window_base_index.to_string(),
+            "pane-base-index" => app.pane_base_index.to_string(),
+            "escape-time" => app.escape_time_ms.to_string(),
+            "mouse" => if app.mouse_enabled { "on".into() } else { "off".into() },
+            "status" => if app.status_visible { "on".into() } else { "off".into() },
+            "status-position" => app.status_position.clone(),
+            "status-left" => app.status_left.clone(),
+            "status-right" => app.status_right.clone(),
+            "history-limit" => app.history_limit.to_string(),
+            "display-time" => app.display_time_ms.to_string(),
+            "display-panes-time" => app.display_panes_time_ms.to_string(),
+            "mode-keys" => app.mode_keys.clone(),
+            "focus-events" => if app.focus_events { "on".into() } else { "off".into() },
+            "renumber-windows" => if app.renumber_windows { "on".into() } else { "off".into() },
+            "automatic-rename" => if app.automatic_rename { "on".into() } else { "off".into() },
+            "monitor-activity" => if app.monitor_activity { "on".into() } else { "off".into() },
+            "synchronize-panes" => if app.sync_input { "on".into() } else { "off".into() },
+            "remain-on-exit" => if app.remain_on_exit { "on".into() } else { "off".into() },
+            "set-titles" => if app.set_titles { "on".into() } else { "off".into() },
+            "set-titles-string" => app.set_titles_string.clone(),
+            "prediction-dimming" => if app.prediction_dimming { "on".into() } else { "off".into() },
+            "default-shell" | "default-command" => app.default_shell.clone(),
+            "word-separators" => app.word_separators.clone(),
+            "pane-border-style" => app.pane_border_style.clone(),
+            "pane-active-border-style" => app.pane_active_border_style.clone(),
+            "status-style" => app.status_style.clone(),
+            "window-status-format" => app.window_status_format.clone(),
+            "window-status-current-format" => app.window_status_current_format.clone(),
+            "window-status-separator" => app.window_status_separator.clone(),
+            _ => String::new(),
+        }
+    }
     /// Check non-active windows for output activity and set their activity_flag
     fn check_window_activity(app: &mut AppState) {
         if !app.monitor_activity { return; }
@@ -943,8 +1038,9 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 let wscf_escaped = app.window_status_current_format.replace('"', "\\\"");
                 let wss_escaped = app.window_status_separator.replace('"', "\\\"");
                 let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
-                    "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\"}}",
-                    layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, wsf_escaped, wscf_escaped, wss_escaped
+                    "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"clock_mode\":{}}}",
+                    layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, wsf_escaped, wscf_escaped, wss_escaped,
+                    matches!(app.mode, Mode::ClockMode),
                 ));
                 cached_dump_state.clear();
                 cached_dump_state.push_str(&combined_buf);
@@ -1051,8 +1147,9 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     let wscf_escaped = app.window_status_current_format.replace('"', "\\\"");
                     let wss_escaped = app.window_status_separator.replace('"', "\\\"");
                     let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
-                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\"}}",
-                        layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, wsf_escaped, wscf_escaped, wss_escaped
+                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"clock_mode\":{}}}",
+                        layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, wsf_escaped, wscf_escaped, wss_escaped,
+                        matches!(app.mode, Mode::ClockMode),
                     ));
                     cached_dump_state.clear();
                     cached_dump_state.push_str(&combined_buf);
@@ -1066,6 +1163,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 CtrlReq::SendPaste(s) => { send_text_to_active(&mut app, &s)?; sent_pty_input = true; }
                 CtrlReq::ZoomPane => { toggle_zoom(&mut app); }
                 CtrlReq::CopyEnter => { enter_copy_mode(&mut app); }
+                CtrlReq::ClockMode => { app.mode = Mode::ClockMode; }
                 CtrlReq::CopyMove(dx, dy) => { move_copy_cursor(&mut app, dx, dy); }
                 CtrlReq::CopyAnchor => { if let Some((r,c)) = current_prompt_pos(&mut app) { app.copy_anchor = Some((r,c)); app.copy_pos = Some((r,c)); } }
                 CtrlReq::CopyYank => { let _ = yank_selection(&mut app); app.mode = Mode::Passthrough; }
@@ -1790,6 +1888,22 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         command: cmd,
                         input: String::new(),
                     };
+                }
+                CtrlReq::ResizePaneAbsolute(axis, size) => {
+                    resize_pane_absolute(&mut app, &axis, size);
+                }
+                CtrlReq::ShowOptionValue(resp, name) => {
+                    let val = get_option_value(&app, &name);
+                    let _ = resp.send(val);
+                }
+                CtrlReq::ChooseBuffer(resp) => {
+                    let mut output = String::new();
+                    for (i, buf) in app.paste_buffers.iter().enumerate() {
+                        let preview: String = buf.chars().take(50).collect();
+                        let preview = preview.replace('\n', "\\n").replace('\r', "");
+                        output.push_str(&format!("buffer{}: {} bytes: \"{}\"\n", i, buf.len(), preview));
+                    }
+                    let _ = resp.send(output);
                 }
             }
             // Fire any hooks registered for the event that just occurred

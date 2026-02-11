@@ -145,8 +145,15 @@ fn expand_format_var_for_window(var: &str, app: &AppState, win_idx: usize) -> St
         }
         "pane_in_mode" => {
             match app.mode {
-                crate::types::Mode::CopyMode | crate::types::Mode::CopySearch { .. } => "1".into(),
+                crate::types::Mode::CopyMode | crate::types::Mode::CopySearch { .. } | crate::types::Mode::ClockMode => "1".into(),
                 _ => "0".into(),
+            }
+        }
+        "pane_mode" => {
+            match app.mode {
+                crate::types::Mode::CopyMode | crate::types::Mode::CopySearch { .. } => "copy-mode".into(),
+                crate::types::Mode::ClockMode => "clock-mode".into(),
+                _ => "".into(),
             }
         }
         "pane_synchronized" => if app.sync_input { "1".into() } else { "0".into() },

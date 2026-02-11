@@ -97,8 +97,10 @@ pub fn print_commands() {
   bind-key (bind)           - Bind a key to a command
   break-pane                - Break a pane into a new window
   capture-pane              - Capture the contents of a pane
+  choose-buffer (chooseb)   - Choose a paste buffer interactively
   choose-tree               - Choose a session, window or pane from a tree
   clear-history (clearhist) - Clear pane scrollback history
+  clock-mode                - Display a large clock in current pane
   confirm-before (confirm)  - Run command after confirmation
   copy-mode                 - Enter copy mode
   delete-buffer             - Delete a paste buffer
@@ -156,6 +158,7 @@ pub fn print_commands() {
   show-environment (showenv)- Show environment variables
   show-hooks                - Show defined hooks
   show-options (show)       - Show session or window options
+  show-window-options (showw)- Show window options
   source-file (source)      - Execute commands from a file
   split-window (splitw)     - Split a window into panes
   start-server              - Start the psmux server

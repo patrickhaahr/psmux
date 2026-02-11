@@ -392,6 +392,35 @@ pub fn resize_pane_horizontal(app: &mut AppState, amount: i16) {
     }
 }
 
+/// Absolute resize: set the active pane's share to an exact size.
+/// axis is "x" (width/horizontal) or "y" (height/vertical).
+pub fn resize_pane_absolute(app: &mut AppState, axis: &str, target: u16) {
+    let win = &mut app.windows[app.active_idx];
+    if win.active_path.is_empty() { return; }
+    let target_kind = if axis == "x" { LayoutKind::Horizontal } else { LayoutKind::Vertical };
+    for depth in (0..win.active_path.len()).rev() {
+        let parent_path = win.active_path[..depth].to_vec();
+        if let Some(Node::Split { kind, sizes, .. }) = get_split_mut(&mut win.root, &parent_path) {
+            if *kind == target_kind {
+                let idx = win.active_path[depth];
+                if idx < sizes.len() {
+                    let old = sizes[idx];
+                    let new = target.max(1);
+                    let diff = new as i16 - old as i16;
+                    sizes[idx] = new;
+                    // Absorb the difference from a neighbour
+                    if idx + 1 < sizes.len() {
+                        sizes[idx + 1] = (sizes[idx + 1] as i16 - diff).max(1) as u16;
+                    } else if idx > 0 {
+                        sizes[idx - 1] = (sizes[idx - 1] as i16 - diff).max(1) as u16;
+                    }
+                }
+                return;
+            }
+        }
+    }
+}
+
 pub fn rotate_panes(app: &mut AppState, _reverse: bool) {
     let win = &mut app.windows[app.active_idx];
     match &mut win.root {

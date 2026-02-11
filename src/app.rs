@@ -175,6 +175,7 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 Mode::MenuMode { .. } => "MENU",
                 Mode::PopupMode { .. } => "POPUP",
                 Mode::ConfirmMode { .. } => "CONFIRM",
+                Mode::ClockMode => "CLOCK",
             };
             let time_str = Local::now().format("%H:%M").to_string();
             let status_spans = parse_status(&app.status_left, &app, &time_str);

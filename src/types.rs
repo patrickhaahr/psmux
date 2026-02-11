@@ -119,6 +119,8 @@ pub enum Mode {
         input: String,
         forward: bool,
     },
+    /// Big clock display (tmux clock-mode)
+    ClockMode,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -431,6 +433,10 @@ pub enum CtrlReq {
     DisplayMenu(String, Option<i16>, Option<i16>),
     DisplayPopup(String, u16, u16, bool),
     ConfirmBefore(String, String),
+    ClockMode,
+    ResizePaneAbsolute(String, u16),
+    ShowOptionValue(mpsc::Sender<String>, String),
+    ChooseBuffer(mpsc::Sender<String>),
 }
 
 /// Wait-for operation types

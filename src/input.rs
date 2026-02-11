@@ -533,6 +533,11 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             }
             Ok(false)
         }
+        Mode::ClockMode => {
+            // Any key exits clock mode
+            app.mode = Mode::Passthrough;
+            Ok(false)
+        }
     }
 }
 
@@ -810,6 +815,11 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
 }
 
 pub fn send_text_to_active(app: &mut AppState, text: &str) -> io::Result<()> {
+    // In clock mode, any input exits back to passthrough
+    if matches!(app.mode, Mode::ClockMode) {
+        app.mode = Mode::Passthrough;
+        return Ok(());
+    }
     // In copy mode, interpret characters as copy-mode actions (never send to PTY)
     if matches!(app.mode, Mode::CopyMode) {
         for c in text.chars() {
@@ -891,6 +901,11 @@ fn handle_copy_mode_char(app: &mut AppState, c: char) -> io::Result<()> {
 }
 
 pub fn send_key_to_active(app: &mut AppState, k: &str) -> io::Result<()> {
+    // In clock mode, any key exits back to passthrough
+    if matches!(app.mode, Mode::ClockMode) {
+        app.mode = Mode::Passthrough;
+        return Ok(());
+    }
     // --- Copy-search mode: handle esc/enter/backspace ---
     if matches!(app.mode, Mode::CopySearch { .. }) {
         match k {

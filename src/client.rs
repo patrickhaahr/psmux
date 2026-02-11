@@ -2,6 +2,7 @@ use std::io::{self, Write, BufRead, BufReader};
 use std::time::{Duration, Instant};
 use std::env;
 
+use chrono::Local;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, KeyEventKind};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -313,7 +314,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
     let mut win_status_sep: String = " ".to_string();
 
     #[derive(serde::Deserialize, Default)]
-    struct WinStatus { id: usize, name: String, active: bool }
+    struct WinStatus { id: usize, name: String, active: bool, #[serde(default)] activity: bool }
     
     fn default_base_index() -> usize { 1 }
     fn default_prediction_dimming() -> bool { dim_predictions_enabled() }
@@ -349,6 +350,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
         /// window-status-separator
         #[serde(default)]
         wss: Option<String>,
+        /// clock-mode active
+        #[serde(default)]
+        clock_mode: bool,
     }
 
     let mut cmd_batch: Vec<String> = Vec::new();
@@ -950,6 +954,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
         last_tree = state.tree;
         let base_index = state.base_index;
         let dim_preds = state.prediction_dimming;
+        let clock_active = state.clock_mode;
 
         // Update prefix key from server config (if provided)
         if let Some(ref prefix_str) = state.prefix {
@@ -1008,7 +1013,53 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
             let chunks = Layout::default().direction(Direction::Vertical)
                 .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref()).split(area);
 
-            fn render_json(f: &mut Frame, node: &LayoutJson, area: Rect, dim_preds: bool, border_fg: Color, active_border_fg: Color) {
+            /// Render a large ASCII clock overlay (tmux clock-mode)
+            fn render_clock_overlay(f: &mut Frame, area: Rect) {
+                // Big digit font (5 rows high, 3 cols wide per digit + colon)
+                const DIGITS: [&[&str; 5]; 10] = [
+                    &["###", "# #", "# #", "# #", "###"],  // 0
+                    &["  #", "  #", "  #", "  #", "  #"],  // 1
+                    &["###", "  #", "###", "#  ", "###"],  // 2
+                    &["###", "  #", "###", "  #", "###"],  // 3
+                    &["# #", "# #", "###", "  #", "  #"],  // 4
+                    &["###", "#  ", "###", "  #", "###"],  // 5
+                    &["###", "#  ", "###", "# #", "###"],  // 6
+                    &["###", "  #", "  #", "  #", "  #"],  // 7
+                    &["###", "# #", "###", "# #", "###"],  // 8
+                    &["###", "# #", "###", "  #", "###"],  // 9
+                ];
+                const COLON: [&str; 5] = [" ", "#", " ", "#", " "];
+                let now = chrono::Local::now();
+                let time_str = now.format("%H:%M:%S").to_string();
+                // Each char is 3 wide + 1 gap, colon is 1 wide + 1 gap
+                let total_w: u16 = time_str.chars().map(|c| if c == ':' { 2 } else { 4 }).sum::<u16>() - 1;
+                let total_h: u16 = 5;
+                if area.width < total_w || area.height < total_h { return; }
+                let start_x = area.x + (area.width.saturating_sub(total_w)) / 2;
+                let start_y = area.y + (area.height.saturating_sub(total_h)) / 2;
+                // Clear the area
+                let clock_area = Rect::new(start_x.saturating_sub(1), start_y, total_w + 2, total_h);
+                f.render_widget(Clear, clock_area);
+                for row in 0..5u16 {
+                    let mut x = start_x;
+                    for ch in time_str.chars() {
+                        if ch == ':' {
+                            let cell_area = Rect::new(x, start_y + row, 1, 1);
+                            let s = Span::styled(COLON[row as usize], Style::default().fg(Color::Cyan));
+                            f.render_widget(Paragraph::new(Line::from(s)), cell_area);
+                            x += 2;
+                        } else if let Some(d) = ch.to_digit(10) {
+                            let pattern = DIGITS[d as usize][row as usize];
+                            let cell_area = Rect::new(x, start_y + row, 3, 1);
+                            let s = Span::styled(pattern, Style::default().fg(Color::Cyan));
+                            f.render_widget(Paragraph::new(Line::from(s)), cell_area);
+                            x += 4;
+                        }
+                    }
+                }
+            }
+
+            fn render_json(f: &mut Frame, node: &LayoutJson, area: Rect, dim_preds: bool, border_fg: Color, active_border_fg: Color, clock_mode: bool) {
                 match node {
                     LayoutJson::Leaf {
                         id: _,
@@ -1126,6 +1177,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                         }
 
                         if *active && !*copy_mode {
+                            // Clock mode overlay
+                            if clock_mode {
+                                render_clock_overlay(f, inner);
+                            }
                             let cy = inner.y + (*cursor_row).min(inner.height.saturating_sub(1));
                             let cx = inner.x + (*cursor_col).min(inner.width.saturating_sub(1));
                             f.set_cursor(cx, cy);
@@ -1142,7 +1197,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
 
                         // Render children first
                         for (i, child) in children.iter().enumerate() {
-                            if i < rects.len() { render_json(f, child, rects[i], dim_preds, border_fg, active_border_fg); }
+                            if i < rects.len() { render_json(f, child, rects[i], dim_preds, border_fg, active_border_fg, clock_mode); }
                         }
 
                         // Draw separator lines between children using direct buffer access
@@ -1184,7 +1239,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                 }
             }
 
-            render_json(f, &root, chunks[0], dim_preds, pane_border_fg, pane_active_border_fg);
+            render_json(f, &root, chunks[0], dim_preds, pane_border_fg, pane_active_border_fg, clock_active);
 
             // ── Left-click drag text selection overlay ────────────────
             if let (Some(s), Some(e)) = (sel_s, sel_e) {
@@ -1308,7 +1363,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                 let display_idx = i + base_index;
                 // Expand window-status-format: #I=index, #W=name, #F=flags
                 let fmt = if w.active { &win_status_current_fmt } else { &win_status_fmt };
-                let flags = if w.active { "*" } else { "" };
+                let flags = if w.active { "*" }
+                    else if w.activity { "#" }
+                    else { "" };
                 let tab_text = fmt
                     .replace("#I", &display_idx.to_string())
                     .replace("#W", &w.name)
@@ -1322,6 +1379,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                         Style::default()
                             .fg(Color::Black)
                             .bg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else if w.activity {
+                    // Activity visual notification: reverse video for windows with activity
+                    status_spans.push(Span::styled(
+                        tab_text,
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::White)
                             .add_modifier(Modifier::BOLD),
                     ));
                 } else {
