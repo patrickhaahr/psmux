@@ -8,7 +8,7 @@ use ratatui::prelude::*;
 
 use crate::types::*;
 use crate::tree::*;
-use crate::pane::{create_window, detect_shell, set_tmux_env};
+use crate::pane::{create_window, detect_shell, build_default_shell, set_tmux_env};
 use crate::copy_mode::{scroll_copy_up, scroll_copy_down, yank_selection};
 use crate::platform::mouse_inject;
 
@@ -497,7 +497,11 @@ pub fn respawn_active_pane(app: &mut AppState) -> io::Result<()> {
     
     let size = PtySize { rows: pane.last_rows, cols: pane.last_cols, pixel_width: 0, pixel_height: 0 };
     let pair = pty_system.openpty(size).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
-    let mut shell_cmd = detect_shell();
+    let mut shell_cmd = if !app.default_shell.is_empty() {
+        build_default_shell(&app.default_shell)
+    } else {
+        detect_shell()
+    };
     set_tmux_env(&mut shell_cmd, pane_id, app.control_port);
     let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
     let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, app.history_limit)));

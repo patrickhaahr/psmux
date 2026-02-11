@@ -579,50 +579,113 @@ pub mod process_info {
 
     /// Get the name of the deepest child process (the actual running command in the pane).
     pub fn get_foreground_process_name(pid: u32) -> Option<String> {
-        let deepest = find_deepest_child_pid(pid);
+        let deepest = find_foreground_child_pid(pid);
         let target = deepest.unwrap_or(pid);
         get_process_name(target)
     }
 
     /// Get the CWD of the deepest child process.
     pub fn get_foreground_cwd(pid: u32) -> Option<String> {
-        let deepest = find_deepest_child_pid(pid);
+        let deepest = find_foreground_child_pid(pid);
         let target = deepest.unwrap_or(pid);
         get_process_cwd(target)
     }
 
-    /// Walk the process tree from `root_pid` to find the deepest descendant.
-    fn find_deepest_child_pid(root_pid: u32) -> Option<u32> {
+    /// Known system/infrastructure processes that should be skipped when
+    /// walking the process tree to find the user's foreground command.
+    fn is_system_exe(name: &str) -> bool {
+        matches!(name,
+            "conhost.exe" | "csrss.exe" | "dwm.exe" | "services.exe"
+            | "svchost.exe" | "wininit.exe" | "winlogon.exe"
+            | "openconsole.exe" | "runtimebroker.exe"
+        )
+    }
+
+    /// Walk the process tree from `root_pid` downward and return the PID of
+    /// the process most likely to be the user's foreground command.
+    ///
+    /// Strategy: BFS all descendants, then pick the deepest non-system leaf.
+    /// When multiple candidates exist at the same depth, prefer the largest
+    /// PID (heuristic for "most recently created").
+    fn find_foreground_child_pid(root_pid: u32) -> Option<u32> {
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             if snap == INVALID_HANDLE || snap == 0 { return None; }
 
-            let mut entries: Vec<(u32, u32)> = Vec::new();
+            // Collect (pid, ppid, exe_name_lower) for every process.
+            let mut entries: Vec<(u32, u32, String)> = Vec::with_capacity(512);
             let mut pe: PROCESSENTRY32W = std::mem::zeroed();
             pe.dw_size = std::mem::size_of::<PROCESSENTRY32W>() as u32;
 
             if Process32FirstW(snap, &mut pe) != 0 {
-                entries.push((pe.th32_process_id, pe.th32_parent_process_id));
+                let name = exe_name_from_entry(&pe);
+                entries.push((pe.th32_process_id, pe.th32_parent_process_id, name));
                 while Process32NextW(snap, &mut pe) != 0 {
-                    entries.push((pe.th32_process_id, pe.th32_parent_process_id));
+                    let name = exe_name_from_entry(&pe);
+                    entries.push((pe.th32_process_id, pe.th32_parent_process_id, name));
                 }
             }
             CloseHandle(snap);
 
-            // Walk down: from root, find child, then child's child, etc.
-            let mut current = root_pid;
-            loop {
-                let children: Vec<u32> = entries.iter()
-                    .filter(|(_, ppid)| *ppid == current)
-                    .map(|(pid, _)| *pid)
-                    .collect();
-                if children.is_empty() {
-                    break;
+            // BFS: collect all descendants with their depth.
+            // Each entry is (pid, exe_name, depth).
+            let mut descendants: Vec<(u32, String, u32)> = Vec::new();
+            let mut queue: Vec<(u32, u32)> = vec![(root_pid, 0)]; // (pid, depth)
+            let mut head = 0;
+            while head < queue.len() {
+                let (parent, depth) = queue[head];
+                head += 1;
+                for (pid, ppid, name) in &entries {
+                    if *ppid == parent && *pid != root_pid
+                        && !descendants.iter().any(|(p, _, _)| p == pid)
+                    {
+                        descendants.push((*pid, name.clone(), depth + 1));
+                        queue.push((*pid, depth + 1));
+                    }
                 }
-                current = children[0];
             }
-            if current != root_pid { Some(current) } else { None }
+
+            if descendants.is_empty() {
+                return None;
+            }
+
+            // A "leaf" is a descendant that has no children in our descendant set.
+            let desc_pids: std::collections::HashSet<u32> =
+                descendants.iter().map(|(p, _, _)| *p).collect();
+            let leaves: Vec<(u32, &str, u32)> = descendants.iter()
+                .filter(|(pid, _, _)| {
+                    // No entry in the process table has this pid as parent
+                    // while also being in our descendant set.
+                    !entries.iter().any(|(ep, eppid, _)| *eppid == *pid && desc_pids.contains(ep))
+                })
+                .map(|(pid, name, depth)| (*pid, name.as_str(), *depth))
+                .collect();
+
+            // Choose from leaves if available, otherwise from all descendants.
+            let pool: Vec<(u32, &str, u32)> = if !leaves.is_empty() {
+                leaves
+            } else {
+                descendants.iter().map(|(p, n, d)| (*p, n.as_str(), *d)).collect()
+            };
+
+            // Prefer non-system candidates.
+            let user_pool: Vec<&(u32, &str, u32)> = pool.iter()
+                .filter(|(_, name, _)| !is_system_exe(name))
+                .collect();
+
+            let selection = if !user_pool.is_empty() { user_pool } else { pool.iter().collect() };
+
+            // Deepest first, then largest PID as tiebreaker.
+            selection.iter()
+                .max_by(|a, b| a.2.cmp(&b.2).then(a.0.cmp(&b.0)))
+                .map(|(pid, _, _)| *pid)
         }
+    }
+
+    /// Extract the lowercased executable name from a PROCESSENTRY32W.
+    fn exe_name_from_entry(pe: &PROCESSENTRY32W) -> String {
+        let nul = pe.sz_exe_file.iter().position(|&c| c == 0).unwrap_or(pe.sz_exe_file.len());
+        String::from_utf16_lossy(&pe.sz_exe_file[..nul]).to_lowercase()
     }
 }
 

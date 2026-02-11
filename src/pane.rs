@@ -9,10 +9,18 @@ use crate::types::*;
 use crate::tree::*;
 
 /// Determine the default shell name for window naming (like tmux shows "bash", "zsh").
-fn default_shell_name(command: Option<&str>) -> String {
+fn default_shell_name(command: Option<&str>, configured_shell: Option<&str>) -> String {
     if let Some(cmd) = command {
         // Extract the program name from the command string
         let first = cmd.split_whitespace().next().unwrap_or(cmd);
+        std::path::Path::new(first)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(first)
+            .to_string()
+    } else if let Some(shell) = configured_shell {
+        // Use configured default-shell name
+        let first = shell.split_whitespace().next().unwrap_or(shell);
         std::path::Path::new(first)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -33,7 +41,15 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
         .openpty(size)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
 
-    let mut shell_cmd = build_command(command);
+    // When no explicit command is given, use the configured default-shell
+    // (from `set -g default-shell` / `default-command`).
+    let mut shell_cmd = if command.is_some() {
+        build_command(command)
+    } else if !app.default_shell.is_empty() {
+        build_default_shell(&app.default_shell)
+    } else {
+        build_command(None)
+    };
     set_tmux_env(&mut shell_cmd, app.next_pane_id, app.control_port);
     let child = pair
         .slave
@@ -66,9 +82,10 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
         }
     });
 
+    let configured_shell = if app.default_shell.is_empty() { None } else { Some(app.default_shell.as_str()) };
     let pane = Pane { master: pair.master, child, term, last_rows: size.rows, last_cols: size.cols, id: app.next_pane_id, title: format!("pane %{}", app.next_pane_id), child_pid: None, data_version, last_title_check: std::time::Instant::now(), dead: false };
     app.next_pane_id += 1;
-    let win_name = command.map(|c| default_shell_name(Some(c))).unwrap_or_else(|| default_shell_name(None));
+    let win_name = command.map(|c| default_shell_name(Some(c), None)).unwrap_or_else(|| default_shell_name(None, configured_shell));
     app.windows.push(Window { root: Node::Leaf(pane), active_path: vec![], name: win_name, id: app.next_win_id, activity_flag: false, bell_flag: false, silence_flag: false, last_output_time: std::time::Instant::now(), last_seen_version: 0 });
     app.next_win_id += 1;
     app.active_idx = app.windows.len() - 1;
@@ -131,7 +148,14 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     let pty_system = PtySystemSelection::default().get().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("pty system error: {e}")))?;
     let size = PtySize { rows: 30, cols: 120, pixel_width: 0, pixel_height: 0 };
     let pair = pty_system.openpty(size).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
-    let mut shell_cmd = build_command(command);
+    // When no explicit command is given, use the configured default-shell.
+    let mut shell_cmd = if command.is_some() {
+        build_command(command)
+    } else if !app.default_shell.is_empty() {
+        build_default_shell(&app.default_shell)
+    } else {
+        build_command(None)
+    };
     set_tmux_env(&mut shell_cmd, app.next_pane_id, app.control_port);
     let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
     let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, app.history_limit)));
@@ -247,6 +271,45 @@ pub fn build_command(command: Option<&str>) -> CommandBuilder {
             }
         }
     }
+}
+
+/// Build a CommandBuilder that launches the given shell path interactively.
+/// Used when `default-shell` / `default-command` is configured.
+/// Supports pwsh, powershell, cmd, and any arbitrary executable.
+pub fn build_default_shell(shell_path: &str) -> CommandBuilder {
+    // Extract the program (first token) and optional extra arguments.
+    let parts: Vec<&str> = shell_path.split_whitespace().collect();
+    let program = parts.first().copied().unwrap_or(shell_path);
+    let extra_args: Vec<&str> = if parts.len() > 1 { parts[1..].to_vec() } else { vec![] };
+
+    // Resolve bare names via `which`.
+    let resolved = which::which(program).ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| program.to_string());
+
+    let lower = resolved.to_lowercase();
+    let mut builder = CommandBuilder::new(&resolved);
+    builder.env("TERM", "xterm-256color");
+    builder.env("COLORTERM", "truecolor");
+    builder.env("PSMUX_SESSION", "1");
+
+    if lower.contains("pwsh") || lower.contains("powershell") {
+        // PSReadLine prediction workaround for PowerShell-based shells.
+        let psrl_init = concat!(
+            "$PSStyle.OutputRendering = 'Ansi'; ",
+            "try { Set-PSReadLineOption -PredictionSource None -ErrorAction Stop } catch {}; ",
+            "try { Set-PSReadLineOption -PredictionViewStyle InlineView -ErrorAction Stop } catch {}; ",
+            "try { Remove-PSReadLineKeyHandler -Chord 'F2' -ErrorAction Stop } catch {}",
+        );
+        builder.args(["-NoLogo", "-NoExit", "-Command", psrl_init]);
+    }
+
+    // Append any extra arguments from the default-shell string.
+    if !extra_args.is_empty() {
+        builder.args(extra_args);
+    }
+
+    builder
 }
 
 /// Build a CommandBuilder for direct execution (no shell wrapping).
