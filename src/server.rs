@@ -13,6 +13,26 @@ use crate::platform::install_console_ctrl_handler;
 use crate::cli::parse_target;
 use crate::pane::*;
 use crate::tree::{self, *};
+
+/// Escape a string for embedding inside a JSON double-quoted value.
+/// Handles backslashes, double-quotes, and control characters.
+fn json_escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
 use crate::input::*;
 use crate::copy_mode::*;
 use crate::layout::*;
@@ -1269,14 +1289,14 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     }
                 }
                 combined_buf.clear();
-                let ss_escaped = cached_status_style.replace('"', "\\\"" );
-                let sl_expanded = expand_format(&app.status_left, &app).replace('"', "\\\"");
-                let sr_expanded = expand_format(&app.status_right, &app).replace('"', "\\\"");
-                let pbs_escaped = app.pane_border_style.replace('"', "\\\"");
-                let pabs_escaped = app.pane_active_border_style.replace('"', "\\\"");
-                let wsf_escaped = app.window_status_format.replace('"', "\\\"");
-                let wscf_escaped = app.window_status_current_format.replace('"', "\\\"");
-                let wss_escaped = app.window_status_separator.replace('"', "\\\"");
+                let ss_escaped = json_escape_string(&cached_status_style);
+                let sl_expanded = json_escape_string(&expand_format(&app.status_left, &app));
+                let sr_expanded = json_escape_string(&expand_format(&app.status_right, &app));
+                let pbs_escaped = json_escape_string(&app.pane_border_style);
+                let pabs_escaped = json_escape_string(&app.pane_active_border_style);
+                let wsf_escaped = json_escape_string(&app.window_status_format);
+                let wscf_escaped = json_escape_string(&app.window_status_current_format);
+                let wss_escaped = json_escape_string(&app.window_status_separator);
                 let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
                     "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"clock_mode\":{}}}",
                     layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, wsf_escaped, wscf_escaped, wss_escaped,
@@ -1405,14 +1425,14 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     }
                     let layout_json = dump_layout_json_fast(&mut app)?;
                     combined_buf.clear();
-                    let ss_escaped = cached_status_style.replace('"', "\\\"" );
-                    let sl_expanded = expand_format(&app.status_left, &app).replace('"', "\\\"");
-                    let sr_expanded = expand_format(&app.status_right, &app).replace('"', "\\\"");
-                    let pbs_escaped = app.pane_border_style.replace('"', "\\\"");
-                    let pabs_escaped = app.pane_active_border_style.replace('"', "\\\"");
-                    let wsf_escaped = app.window_status_format.replace('"', "\\\"");
-                    let wscf_escaped = app.window_status_current_format.replace('"', "\\\"");
-                    let wss_escaped = app.window_status_separator.replace('"', "\\\"");
+                    let ss_escaped = json_escape_string(&cached_status_style);
+                    let sl_expanded = json_escape_string(&expand_format(&app.status_left, &app));
+                    let sr_expanded = json_escape_string(&expand_format(&app.status_right, &app));
+                    let pbs_escaped = json_escape_string(&app.pane_border_style);
+                    let pabs_escaped = json_escape_string(&app.pane_active_border_style);
+                    let wsf_escaped = json_escape_string(&app.window_status_format);
+                    let wscf_escaped = json_escape_string(&app.window_status_current_format);
+                    let wss_escaped = json_escape_string(&app.window_status_separator);
                     let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
                         "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"clock_mode\":{}}}",
                         layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, wsf_escaped, wscf_escaped, wss_escaped,
