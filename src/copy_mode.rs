@@ -704,3 +704,89 @@ pub fn capture_active_pane_range(app: &mut AppState, s: Option<u16>, e: Option<u
     for r in start..=end { for c in 0..p.last_cols { if let Some(cell) = screen.cell(r, c) { text.push_str(&cell.contents().to_string()); } else { text.push(' '); } } text.push('\n'); }
     Ok(Some(text))
 }
+
+/// Capture the active pane's screen content with ANSI escape sequences preserved.
+/// This is the `-e` flag for capture-pane.
+pub fn capture_active_pane_styled(app: &mut AppState) -> io::Result<Option<String>> {
+    let win = &mut app.windows[app.active_idx];
+    let p = match active_pane_mut(&mut win.root, &win.active_path) { Some(p) => p, None => return Ok(None) };
+    let parser = match p.term.lock() { Ok(g) => g, Err(_) => return Ok(None) };
+    let screen = parser.screen();
+    let mut text = String::new();
+    let mut prev_fg: Option<vt100::Color> = None;
+    let mut prev_bg: Option<vt100::Color> = None;
+    let mut prev_bold = false;
+    let mut prev_italic = false;
+    let mut prev_underline = false;
+    let mut prev_inverse = false;
+
+    for r in 0..p.last_rows {
+        let mut any_style_active = false;
+        for c in 0..p.last_cols {
+            if let Some(cell) = screen.cell(r, c) {
+                let fg = cell.fgcolor();
+                let bg = cell.bgcolor();
+                let bold = cell.bold();
+                let italic = cell.italic();
+                let underline = cell.underline();
+                let inverse = cell.inverse();
+
+                // Emit SGR if attributes changed
+                let style_changed = Some(fg) != prev_fg || Some(bg) != prev_bg
+                    || bold != prev_bold || italic != prev_italic
+                    || underline != prev_underline || inverse != prev_inverse;
+
+                if style_changed {
+                    let mut params = Vec::new();
+                    params.push("0".to_string()); // reset first
+                    if bold { params.push("1".to_string()); }
+                    if italic { params.push("3".to_string()); }
+                    if underline { params.push("4".to_string()); }
+                    if inverse { params.push("7".to_string()); }
+                    // Foreground
+                    match fg {
+                        vt100::Color::Default => {}
+                        vt100::Color::Idx(n) => {
+                            if n < 8 { params.push(format!("{}", 30 + n)); }
+                            else if n < 16 { params.push(format!("{}", 90 + n - 8)); }
+                            else { params.push(format!("38;5;{}", n)); }
+                        }
+                        vt100::Color::Rgb(r, g, b) => { params.push(format!("38;2;{};{};{}", r, g, b)); }
+                    }
+                    // Background
+                    match bg {
+                        vt100::Color::Default => {}
+                        vt100::Color::Idx(n) => {
+                            if n < 8 { params.push(format!("{}", 40 + n)); }
+                            else if n < 16 { params.push(format!("{}", 100 + n - 8)); }
+                            else { params.push(format!("48;5;{}", n)); }
+                        }
+                        vt100::Color::Rgb(r, g, b) => { params.push(format!("48;2;{};{};{}", r, g, b)); }
+                    }
+                    text.push_str(&format!("\x1b[{}m", params.join(";")));
+                    prev_fg = Some(fg);
+                    prev_bg = Some(bg);
+                    prev_bold = bold;
+                    prev_italic = italic;
+                    prev_underline = underline;
+                    prev_inverse = inverse;
+                    any_style_active = true;
+                }
+                text.push_str(&cell.contents().to_string());
+            } else {
+                text.push(' ');
+            }
+        }
+        if any_style_active {
+            text.push_str("\x1b[0m");
+            prev_fg = None;
+            prev_bg = None;
+            prev_bold = false;
+            prev_italic = false;
+            prev_underline = false;
+            prev_inverse = false;
+        }
+        text.push('\n');
+    }
+    Ok(Some(text))
+}

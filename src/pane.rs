@@ -21,7 +21,8 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
         .spawn_command(shell_cmd)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
 
-    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, 1000)));
+    let scrollback = app.history_limit as u32;
+    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, scrollback as usize)));
     let term_reader = term.clone();
     let data_version = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let dv_writer = data_version.clone();
@@ -112,7 +113,7 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     let mut shell_cmd = build_command(command);
     set_tmux_env(&mut shell_cmd, app.next_pane_id, app.control_port);
     let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
-    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, 1000)));
+    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, app.history_limit)));
     let term_reader = term.clone();
     let mut reader = pair.master.try_clone_reader().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
     let data_version = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));

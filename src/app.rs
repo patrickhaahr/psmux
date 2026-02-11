@@ -131,9 +131,15 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     }
                     "kill-pane" => { let _ = tx.send(CtrlReq::KillPane); }
                     "capture-pane" => {
+                        let escape_seqs = args.iter().any(|a| *a == "-e");
                         let (rtx, rrx) = mpsc::channel::<String>();
-                        if start_line.is_some() || end_line.is_some() { let _ = tx.send(CtrlReq::CapturePaneRange(rtx, start_line, end_line)); }
-                        else { let _ = tx.send(CtrlReq::CapturePane(rtx)); }
+                        if escape_seqs {
+                            let _ = tx.send(CtrlReq::CapturePaneStyled(rtx));
+                        } else if start_line.is_some() || end_line.is_some() {
+                            let _ = tx.send(CtrlReq::CapturePaneRange(rtx, start_line, end_line));
+                        } else {
+                            let _ = tx.send(CtrlReq::CapturePane(rtx));
+                        }
                         if let Ok(text) = rrx.recv() { let _ = write!(stream, "{}", text); }
                     }
                     "client-attach" => { let _ = tx.send(CtrlReq::ClientAttach); let _ = write!(stream, "ok\n"); }
@@ -223,14 +229,30 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 f.render_widget(overlay, oa);
             }
 
-            if let Mode::WindowChooser { selected } = app.mode {
+            if let Mode::WindowChooser { selected, ref tree } = app.mode {
                 let mut lines: Vec<Line> = Vec::new();
-                for (i,w) in app.windows.iter().enumerate() {
+                for (i, entry) in tree.iter().enumerate() {
                     let marker = if i == selected { ">" } else { " " };
-                    lines.push(Line::from(format!("{} [{}] {}", marker, i+1, w.name)));
+                    if entry.is_session_header {
+                        let tag = if entry.is_current_session { " (attached)" } else { "" };
+                        lines.push(Line::from(format!("{} {} {}{}",
+                            marker,
+                            if entry.is_current_session { "▼" } else { "▶" },
+                            entry.session_name,
+                            tag,
+                        )).style(Style::default().fg(Color::Yellow).add_modifier(ratatui::style::Modifier::BOLD)));
+                    } else {
+                        let active_mark = if entry.is_active_window { "*" } else { " " };
+                        let wi = entry.window_index.unwrap_or(0);
+                        lines.push(Line::from(format!("{}   {}: {}{} ({} panes) [{}]",
+                            marker, wi, entry.window_name, active_mark,
+                            entry.window_panes, entry.window_size,
+                        )));
+                    }
                 }
-                let overlay = Paragraph::new(Text::from(lines)).block(Block::default().borders(Borders::ALL).title("windows"));
-                let oa = centered_rect(60, (app.windows.len() as u16 + 2).min(10), area);
+                let height = (lines.len() as u16 + 2).min(20);
+                let overlay = Paragraph::new(Text::from(lines)).block(Block::default().borders(Borders::ALL).title("choose-tree"));
+                let oa = centered_rect(70, height, area);
                 f.render_widget(Clear, oa);
                 f.render_widget(overlay, oa);
             }
@@ -336,7 +358,7 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             }
 
             // Render Popup mode
-            if let Mode::PopupMode { command, output, width, height, .. } = &app.mode {
+            if let Mode::PopupMode { command, output, width, height, ref popup_pty, .. } = &app.mode {
                 let w = (*width).min(area.width.saturating_sub(4));
                 let h = (*height).min(area.height.saturating_sub(4));
                 let popup_area = Rect {
@@ -352,9 +374,62 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     .border_style(Style::default().fg(Color::Yellow))
                     .title(title);
                 
-                let para = Paragraph::new(output.as_str())
-                    .block(block)
-                    .wrap(ratatui::widgets::Wrap { trim: false });
+                // If we have a PTY, render its VT output
+                let content = if let Some(pty) = popup_pty {
+                    if let Ok(parser) = pty.term.lock() {
+                        let screen = parser.screen();
+                        let inner_h = h.saturating_sub(2);
+                        let inner_w = w.saturating_sub(2);
+                        let mut lines: Vec<Line<'static>> = Vec::new();
+                        for row in 0..inner_h {
+                            let mut spans: Vec<Span<'static>> = Vec::new();
+                            let mut current_text = String::new();
+                            let mut current_style = Style::default();
+                            for col in 0..inner_w {
+                                if let Some(cell) = screen.cell(row, col) {
+                                    let mut style = Style::default();
+                                    // Map vt100 colors to ratatui colors
+                                    match cell.fgcolor() {
+                                        vt100::Color::Default => {}
+                                        vt100::Color::Idx(n) => { style = style.fg(Color::Indexed(n)); }
+                                        vt100::Color::Rgb(r, g, b) => { style = style.fg(Color::Rgb(r, g, b)); }
+                                    }
+                                    match cell.bgcolor() {
+                                        vt100::Color::Default => {}
+                                        vt100::Color::Idx(n) => { style = style.bg(Color::Indexed(n)); }
+                                        vt100::Color::Rgb(r, g, b) => { style = style.bg(Color::Rgb(r, g, b)); }
+                                    }
+                                    if cell.bold() { style = style.add_modifier(Modifier::BOLD); }
+                                    if cell.italic() { style = style.add_modifier(Modifier::ITALIC); }
+                                    if cell.underline() { style = style.add_modifier(Modifier::UNDERLINED); }
+                                    if cell.inverse() { style = style.add_modifier(Modifier::REVERSED); }
+                                    let ch = cell.contents();
+                                    if style != current_style {
+                                        if !current_text.is_empty() {
+                                            spans.push(Span::styled(std::mem::take(&mut current_text), current_style));
+                                        }
+                                        current_style = style;
+                                    }
+                                    if ch.is_empty() { current_text.push(' '); } else { current_text.push_str(&ch); }
+                                } else {
+                                    current_text.push(' ');
+                                }
+                            }
+                            if !current_text.is_empty() {
+                                spans.push(Span::styled(current_text, current_style));
+                            }
+                            lines.push(Line::from(spans));
+                        }
+                        Text::from(lines)
+                    } else {
+                        Text::from(output.as_str())
+                    }
+                } else {
+                    Text::from(output.as_str())
+                };
+                
+                let para = Paragraph::new(content)
+                    .block(block);
                 
                 f.render_widget(Clear, popup_area);
                 f.render_widget(para, popup_area);
@@ -438,6 +513,9 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 CtrlReq::KillPane => { let _ = kill_active_pane(&mut app); resize_all_panes(&mut app); }
                 CtrlReq::CapturePane(resp) => {
                     if let Some(text) = capture_active_pane_text(&mut app)? { let _ = resp.send(text); } else { let _ = resp.send(String::new()); }
+                }
+                CtrlReq::CapturePaneStyled(resp) => {
+                    if let Some(text) = capture_active_pane_styled(&mut app)? { let _ = resp.send(text); } else { let _ = resp.send(String::new()); }
                 }
                 CtrlReq::CapturePaneRange(resp, s, e) => {
                     if let Some(text) = capture_active_pane_range(&mut app, s, e)? { let _ = resp.send(text); } else { let _ = resp.send(String::new()); }

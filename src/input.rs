@@ -152,7 +152,12 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 KeyCode::Char('d') => {
                     return Ok(true);
                 }
-                KeyCode::Char('w') => { app.mode = Mode::WindowChooser { selected: app.active_idx }; true }
+                KeyCode::Char('w') => {
+                    let tree = crate::commands::build_choose_tree(app);
+                    let selected = tree.iter().position(|e| e.is_current_session && e.is_active_window && !e.is_session_header).unwrap_or(0);
+                    app.mode = Mode::WindowChooser { selected, tree };
+                    true
+                }
                 KeyCode::Char(',') => { app.mode = Mode::RenamePrompt { input: String::new() }; true }
                 KeyCode::Char(' ') => { cycle_top_layout(app); true }
                 KeyCode::Char('[') => { enter_copy_mode(app); true }
@@ -292,12 +297,39 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             }
             Ok(false)
         }
-        Mode::WindowChooser { selected } => {
+        Mode::WindowChooser { selected, ref tree } => {
+            let tree_len = tree.len();
             match key.code {
-                KeyCode::Esc => { app.mode = Mode::Passthrough; }
-                KeyCode::Up | KeyCode::Left => { if selected > 0 { if let Mode::WindowChooser { selected: s } = &mut app.mode { *s -= 1; } } }
-                KeyCode::Down | KeyCode::Right => { if selected + 1 < app.windows.len() { if let Mode::WindowChooser { selected: s } = &mut app.mode { *s += 1; } } }
-                KeyCode::Enter => { if let Mode::WindowChooser { selected: s } = &mut app.mode { app.active_idx = *s; app.mode = Mode::Passthrough; } }
+                KeyCode::Esc | KeyCode::Char('q') => { app.mode = Mode::Passthrough; }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if selected > 0 { if let Mode::WindowChooser { selected: s, .. } = &mut app.mode { *s -= 1; } }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if selected + 1 < tree_len { if let Mode::WindowChooser { selected: s, .. } = &mut app.mode { *s += 1; } }
+                }
+                KeyCode::Enter => {
+                    if let Mode::WindowChooser { selected: s, ref tree } = &app.mode {
+                        let entry = &tree[*s];
+                        if entry.is_current_session {
+                            // Same session: switch window directly
+                            if let Some(wi) = entry.window_index {
+                                app.last_window_idx = app.active_idx;
+                                app.active_idx = wi;
+                            }
+                        } else {
+                            // Different session: set env and trigger switch
+                            std::env::set_var("PSMUX_SWITCH_TO", &entry.session_name);
+                        }
+                    }
+                    app.mode = Mode::Passthrough;
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    // Quick-select by window number
+                    let n = c.to_digit(10).unwrap_or(0) as usize;
+                    if let Some(idx) = tree.iter().position(|e| !e.is_session_header && e.window_index == Some(n) && e.is_current_session) {
+                        if let Mode::WindowChooser { selected: s, .. } = &mut app.mode { *s = idx; }
+                    }
+                }
                 _ => {}
             }
             Ok(false)
@@ -628,38 +660,83 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
             }
             Ok(false)
         }
-        Mode::PopupMode { ref mut output, ref mut process, close_on_exit, .. } => {
+        Mode::PopupMode { ref mut output, ref mut process, close_on_exit, ref mut popup_pty, .. } => {
             let mut should_close = false;
             let mut exit_status: Option<std::process::ExitStatus> = None;
             
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    if let Some(ref mut proc) = process {
-                        let _ = proc.kill();
+            // If we have a PTY popup, forward keys to it
+            if let Some(ref mut pty) = popup_pty {
+                match key.code {
+                    KeyCode::Esc => {
+                        // Check if the child has exited
+                        if let Ok(Some(_)) = pty.child.try_wait() {
+                            should_close = true;
+                        } else {
+                            // Forward Escape to the PTY
+                            let _ = pty.master.write_all(b"\x1b");
+                        }
                     }
-                    should_close = true;
+                    KeyCode::Char(c) => {
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                            let ctrl = (c as u8).wrapping_sub(b'a').wrapping_add(1);
+                            let _ = pty.master.write_all(&[ctrl]);
+                        } else {
+                            let mut buf = [0u8; 4];
+                            let s = c.encode_utf8(&mut buf);
+                            let _ = pty.master.write_all(s.as_bytes());
+                        }
+                    }
+                    KeyCode::Enter => { let _ = pty.master.write_all(b"\r"); }
+                    KeyCode::Backspace => { let _ = pty.master.write_all(b"\x7f"); }
+                    KeyCode::Tab => { let _ = pty.master.write_all(b"\t"); }
+                    KeyCode::Up => { let _ = pty.master.write_all(b"\x1b[A"); }
+                    KeyCode::Down => { let _ = pty.master.write_all(b"\x1b[B"); }
+                    KeyCode::Right => { let _ = pty.master.write_all(b"\x1b[C"); }
+                    KeyCode::Left => { let _ = pty.master.write_all(b"\x1b[D"); }
+                    KeyCode::Home => { let _ = pty.master.write_all(b"\x1b[H"); }
+                    KeyCode::End => { let _ = pty.master.write_all(b"\x1b[F"); }
+                    KeyCode::PageUp => { let _ = pty.master.write_all(b"\x1b[5~"); }
+                    KeyCode::PageDown => { let _ = pty.master.write_all(b"\x1b[6~"); }
+                    KeyCode::Delete => { let _ = pty.master.write_all(b"\x1b[3~"); }
+                    _ => {}
                 }
-                KeyCode::Char(c) => {
-                    output.push(c);
-                }
-                KeyCode::Enter => {
-                    output.push('\n');
-                }
-                _ => {}
-            }
-            
-            if let Some(ref mut proc) = process {
-                if let Ok(Some(status)) = proc.try_wait() {
-                    exit_status = Some(status);
+                // Check if child exited
+                if let Ok(Some(_status)) = pty.child.try_wait() {
                     if close_on_exit {
                         should_close = true;
                     }
                 }
-            }
-            
-            if let Some(status) = exit_status {
-                if !close_on_exit {
-                    output.push_str(&format!("\n[Process exited with status: {}]", status));
+            } else {
+                // Non-PTY popup (static output)
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        if let Some(ref mut proc) = process {
+                            let _ = proc.kill();
+                        }
+                        should_close = true;
+                    }
+                    KeyCode::Char(c) => {
+                        output.push(c);
+                    }
+                    KeyCode::Enter => {
+                        output.push('\n');
+                    }
+                    _ => {}
+                }
+                
+                if let Some(ref mut proc) = process {
+                    if let Ok(Some(status)) = proc.try_wait() {
+                        exit_status = Some(status);
+                        if close_on_exit {
+                            should_close = true;
+                        }
+                    }
+                }
+                
+                if let Some(status) = exit_status {
+                    if !close_on_exit {
+                        output.push_str(&format!("\n[Process exited with status: {}]", status));
+                    }
                 }
             }
             

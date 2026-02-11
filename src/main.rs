@@ -255,6 +255,28 @@ fn main() -> io::Result<()> {
                         cmd.arg(a);
                     }
                 }
+                // On Windows, mark parent's stdout/stderr as non-inheritable before
+                // spawning the server. This prevents the server from inheriting
+                // PowerShell's redirect pipes (which would cause the parent to hang
+                // waiting for the pipe to close). The server creates its own ConPTY
+                // handles so it doesn't need the parent's stdio.
+                #[cfg(windows)]
+                {
+                    #[link(name = "kernel32")]
+                    extern "system" {
+                        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+                        fn SetHandleInformation(hObject: *mut std::ffi::c_void, dwMask: u32, dwFlags: u32) -> i32;
+                    }
+                    const STD_OUTPUT_HANDLE: u32 = 0xFFFFFFF5u32; // -11i32 as u32
+                    const STD_ERROR_HANDLE: u32 = 0xFFFFFFF4u32;  // -12i32 as u32
+                    const HANDLE_FLAG_INHERIT: u32 = 0x00000001;
+                    unsafe {
+                        let stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+                        let stderr = GetStdHandle(STD_ERROR_HANDLE);
+                        SetHandleInformation(stdout, HANDLE_FLAG_INHERIT, 0);
+                        SetHandleInformation(stderr, HANDLE_FLAG_INHERIT, 0);
+                    }
+                }
                 // On Windows, use DETACHED_PROCESS to completely detach from parent console.
                 // This ensures the server survives when the parent SSH/console dies.
                 // CREATE_NEW_PROCESS_GROUP prevents Ctrl+C signals from propagating.
@@ -288,17 +310,24 @@ fn main() -> io::Result<()> {
             "new-window" | "neww" => {
                 // Parse -n name flag
                 let name_arg: Option<String> = cmd_args.windows(2).find(|w| w[0] == "-n").map(|w| w[1].trim_matches('"').to_string());
-                // Parse command — first non-flag argument, excluding -n/-t values
+                let detached = cmd_args.iter().any(|a| *a == "-d");
+                // Parse -c start_dir flag
+                let start_dir: Option<String> = cmd_args.windows(2).find(|w| w[0] == "-c").map(|w| w[1].trim_matches('"').to_string());
+                // Parse command — first non-flag argument, excluding -n/-t/-c values
                 let cmd_arg = cmd_args.iter().skip(1)
                     .filter(|a| !a.starts_with('-'))
                     .find(|a| {
                         // Exclude values of -n and -t flags
-                        !cmd_args.windows(2).any(|w| (w[0] == "-n" || w[0] == "-t") && w[1] == **a)
+                        !cmd_args.windows(2).any(|w| (w[0] == "-n" || w[0] == "-t" || w[0] == "-c") && w[1] == **a)
                     })
                     .map(|s| s.as_str()).unwrap_or("");
                 let mut cmd_line = "new-window".to_string();
+                if detached { cmd_line.push_str(" -d"); }
                 if let Some(name) = &name_arg {
                     cmd_line.push_str(&format!(" -n \"{}\"", name.replace("\"", "\\\"")));
+                }
+                if let Some(dir) = &start_dir {
+                    cmd_line.push_str(&format!(" -c \"{}\"", dir.replace("\"", "\\\"")));
                 }
                 if !cmd_arg.is_empty() {
                     cmd_line.push_str(&format!(" \"{}\"", cmd_arg.replace("\"", "\\\"")));
@@ -309,14 +338,27 @@ fn main() -> io::Result<()> {
             }
             "split-window" | "splitw" => {
                 let flag = if cmd_args.iter().any(|a| *a == "-h") { "-h" } else { "-v" };
+                let detached = cmd_args.iter().any(|a| *a == "-d");
+                // Parse -c start_dir, -p percentage, -l percentage flags
+                let start_dir: Option<String> = cmd_args.windows(2).find(|w| w[0] == "-c").map(|w| w[1].trim_matches('"').to_string());
+                let size_pct: Option<String> = cmd_args.windows(2).find(|w| w[0] == "-p" || w[0] == "-l").map(|w| w[1].to_string());
                 // Parse command after flags (first non-flag argument, skipping command name at cmd_args[0])
-                let cmd_arg = cmd_args.iter().skip(1).find(|a| !a.starts_with('-')).map(|s| s.as_str()).unwrap_or("");
-                if cmd_arg.is_empty() {
-                    send_control(format!("split-window {}\n", flag))?;
-                } else {
-                    // Quote the command argument to preserve spaces
-                    send_control(format!("split-window {} \"{}\"\n", flag, cmd_arg.replace("\"", "\\\"")))?;
+                let cmd_arg = cmd_args.iter().skip(1)
+                    .find(|a| !a.starts_with('-') && !cmd_args.windows(2).any(|w| (w[0] == "-c" || w[0] == "-p" || w[0] == "-l") && w[1] == **a))
+                    .map(|s| s.as_str()).unwrap_or("");
+                let mut cmd_line = format!("split-window {}", flag);
+                if detached { cmd_line.push_str(" -d"); }
+                if let Some(dir) = &start_dir {
+                    cmd_line.push_str(&format!(" -c \"{}\"", dir.replace("\"", "\\\"")));
                 }
+                if let Some(pct) = &size_pct {
+                    cmd_line.push_str(&format!(" -p {}", pct));
+                }
+                if !cmd_arg.is_empty() {
+                    cmd_line.push_str(&format!(" \"{}\"", cmd_arg.replace("\"", "\\\"")));
+                }
+                cmd_line.push('\n');
+                send_control(cmd_line)?;
                 return Ok(());
             }
             "kill-pane" | "killp" => { send_control("kill-pane\n".to_string())?; return Ok(()); }

@@ -74,6 +74,13 @@ pub struct Hook {
     pub command: String,
 }
 
+/// Interactive PTY for popup window (supports fzf, etc.)
+pub struct PopupPty {
+    pub master: Box<dyn portable_pty::MasterPty>,
+    pub child: Box<dyn portable_pty::Child>,
+    pub term: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
+}
+
 /// Pipe pane state - process piping pane output
 pub struct PipePaneState {
     pub pane_id: usize,
@@ -92,14 +99,14 @@ pub enum Mode {
     Passthrough,
     Prefix { armed_at: Instant },
     CommandPrompt { input: String },
-    WindowChooser { selected: usize },
+    WindowChooser { selected: usize, tree: Vec<crate::session::TreeEntry> },
     RenamePrompt { input: String },
     RenameSessionPrompt { input: String },
     CopyMode,
     PaneChooser { opened_at: Instant },
     /// Interactive menu mode
     MenuMode { menu: Menu },
-    /// Popup window running a command
+    /// Popup window running a command (with optional PTY for interactive programs)
     PopupMode { 
         command: String, 
         output: String, 
@@ -107,6 +114,8 @@ pub enum Mode {
         width: u16,
         height: u16,
         close_on_exit: bool,
+        /// Optional: interactive PTY for the popup (fzf, etc.)  
+        popup_pty: Option<PopupPty>,
     },
     /// Confirmation prompt before command
     ConfirmMode { 
@@ -355,6 +364,7 @@ pub enum CtrlReq {
     SplitWindow(LayoutKind, Option<String>, bool, Option<String>, Option<u16>),  // kind, cmd, detached, start_dir, size_percent
     KillPane,
     CapturePane(mpsc::Sender<String>),
+    CapturePaneStyled(mpsc::Sender<String>),
     FocusWindow(usize),
     FocusPane(usize),
     FocusPaneByIndex(usize),
@@ -467,6 +477,8 @@ pub enum CtrlReq {
     PrevLayout,
     ResizeWindow(String, u16),
     RespawnWindow,
+    FocusIn,
+    FocusOut,
 }
 
 /// Wait-for operation types

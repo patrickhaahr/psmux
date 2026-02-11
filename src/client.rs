@@ -872,6 +872,12 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                             _ => {}
                         }
                     }
+                    Event::FocusGained => {
+                        cmd_batch.push("focus-in\n".into());
+                    }
+                    Event::FocusLost => {
+                        cmd_batch.push("focus-out\n".into());
+                    }
                     _ => {}
                 }
                 if quit || !event::poll(Duration::from_millis(0))? { break; }

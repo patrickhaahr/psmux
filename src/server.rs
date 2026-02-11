@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -68,6 +68,12 @@ const TMUX_COMMANDS: &[&str] = &[
 ];
 
 pub fn run_server(session_name: String, initial_command: Option<String>, raw_command: Option<Vec<String>>) -> io::Result<()> {
+    // Write crash info to a log file when stderr is unavailable (detached server)
+    std::panic::set_hook(Box::new(|info| {
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+        let path = format!("{}\\.psmux\\crash.log", home);
+        let _ = std::fs::write(&path, format!("{info}"));
+    }));
     // Install console control handler to prevent termination on client detach
     install_console_ctrl_handler();
 
@@ -316,11 +322,14 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     "capture-pane" | "capturep" => {
                         let print_stdout = args.iter().any(|a| *a == "-p");
                         let join_lines = args.iter().any(|a| *a == "-J");
+                        let escape_seqs = args.iter().any(|a| *a == "-e");
                         // Parse -S start and -E end (negative = scrollback offset, - = entire scrollback)
                         let s_arg = args.windows(2).find(|w| w[0] == "-S").map(|w| w[1]);
                         let e_arg = args.windows(2).find(|w| w[0] == "-E").map(|w| w[1]);
                         let (rtx, rrx) = mpsc::channel::<String>();
-                        if s_arg.is_some() || e_arg.is_some() {
+                        if escape_seqs {
+                            let _ = tx.send(CtrlReq::CapturePaneStyled(rtx));
+                        } else if s_arg.is_some() || e_arg.is_some() {
                             let start: Option<u16> = match s_arg {
                                 Some("-") => Some(0), // entire scrollback start
                                 Some(v) => v.parse::<u16>().ok(),
@@ -1012,6 +1021,8 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         // Lock is a no-op on Windows (no terminal locking concept)
                         // Stub for compatibility
                     }
+                    "focus-in" => { let _ = tx.send(CtrlReq::FocusIn); }
+                    "focus-out" => { let _ = tx.send(CtrlReq::FocusOut); }
                     "choose-client" => {
                         // Single-client model — choose-client is a no-op
                     }
@@ -1275,20 +1286,28 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 }
                 CtrlReq::SplitWindow(k, cmd, detached, start_dir, size_pct) => {
                     if let Some(dir) = &start_dir { env::set_current_dir(dir).ok(); }
+                    let prev_path = app.windows[app.active_idx].active_path.clone();
                     let _ = split_active_with_command(&mut app, k, cmd.as_deref());
                     // Apply size if specified (as percentage)
                     if let Some(_pct) = size_pct {
                         // Size will be applied by resize_all_panes using the layout ratios
                     }
                     if detached {
-                        // Revert focus to the previously active pane
-                        // (split moved focus to the new pane)
+                        // Revert focus to the previously active pane.
+                        // After split, prev_path now points to a Split node;
+                        // the original pane is child [0] of that Split.
+                        let mut revert_path = prev_path;
+                        revert_path.push(0);
+                        app.windows[app.active_idx].active_path = revert_path;
                     }
                     resize_all_panes(&mut app); meta_dirty = true; hook_event = Some("after-split-window");
                 }
-                CtrlReq::KillPane => { let _ = kill_active_pane(&mut app); resize_all_panes(&mut app); meta_dirty = true; hook_event = Some("pane-exited"); }
+                CtrlReq::KillPane => { let _ = kill_active_pane(&mut app); resize_all_panes(&mut app); meta_dirty = true; hook_event = Some("after-kill-pane"); }
                 CtrlReq::CapturePane(resp) => {
                     if let Some(text) = capture_active_pane_text(&mut app)? { let _ = resp.send(text); } else { let _ = resp.send(String::new()); }
+                }
+                CtrlReq::CapturePaneStyled(resp) => {
+                    if let Some(text) = capture_active_pane_styled(&mut app)? { let _ = resp.send(text); } else { let _ = resp.send(String::new()); }
                 }
                 CtrlReq::CapturePaneRange(resp, s, e) => {
                     if let Some(text) = capture_active_pane_range(&mut app, s, e)? { let _ = resp.send(text); } else { let _ = resp.send(String::new()); }
@@ -1369,7 +1388,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 CtrlReq::SendText(s) => { send_text_to_active(&mut app, &s)?; sent_pty_input = true; }
                 CtrlReq::SendKey(k) => { send_key_to_active(&mut app, &k)?; sent_pty_input = true; }
                 CtrlReq::SendPaste(s) => { send_text_to_active(&mut app, &s)?; sent_pty_input = true; }
-                CtrlReq::ZoomPane => { toggle_zoom(&mut app); }
+                CtrlReq::ZoomPane => { toggle_zoom(&mut app); hook_event = Some("after-resize-pane"); }
                 CtrlReq::CopyEnter => { enter_copy_mode(&mut app); }
                 CtrlReq::CopyEnterPageUp => {
                     enter_copy_mode(&mut app);
@@ -1689,6 +1708,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         }
                         _ => {}
                     }
+                    hook_event = Some("after-select-pane");
                 }
                 CtrlReq::SelectWindow(idx) => {
                     if idx >= app.window_base_index {
@@ -1777,6 +1797,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         "D" => { swap_pane(&mut app, FocusDir::Down); }
                         _ => { swap_pane(&mut app, FocusDir::Down); }
                     }
+                    hook_event = Some("after-swap-pane");
                 }
                 CtrlReq::ResizePane(dir, amount) => {
                     match dir.as_str() {
@@ -1784,6 +1805,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         "L" | "R" => { resize_pane_horizontal(&mut app, if dir == "L" { -(amount as i16) } else { amount as i16 }); }
                         _ => {}
                     }
+                    hook_event = Some("after-resize-pane");
                 }
                 CtrlReq::SetBuffer(content) => {
                     app.paste_buffers.insert(0, content);
@@ -1828,6 +1850,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         app.active_idx = app.last_window_idx;
                         app.last_window_idx = tmp;
                     }
+                    hook_event = Some("after-select-window");
                 }
                 CtrlReq::LastPane => {
                     let win = &mut app.windows[app.active_idx];
@@ -1844,12 +1867,15 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 }
                 CtrlReq::RotateWindow(reverse) => {
                     rotate_panes(&mut app, reverse);
+                    hook_event = Some("after-rotate-window");
                 }
                 CtrlReq::DisplayPanes => {
                     // This would show pane numbers overlay - no-op for server mode
                 }
                 CtrlReq::BreakPane => {
                     break_pane_to_window(&mut app);
+                    hook_event = Some("after-break-pane");
+                    meta_dirty = true;
                 }
                 CtrlReq::JoinPane(target_win) => {
                     // Real join-pane: extract active pane from current window and
@@ -1882,6 +1908,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                             }
                             resize_all_panes(&mut app);
                             meta_dirty = true;
+                            hook_event = Some("after-join-pane");
                         } else {
                             // Extraction failed — restore
                             if let Some(rem) = remaining {
@@ -1892,6 +1919,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 }
                 CtrlReq::RespawnPane => {
                     respawn_active_pane(&mut app)?;
+                    hook_event = Some("after-respawn-pane");
                 }
                 CtrlReq::BindKey(table_name, key, command, repeat) => {
                     if let Some(kc) = parse_key_string(&key) {
@@ -2209,7 +2237,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     let win = &mut app.windows[app.active_idx];
                     if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
                         if let Ok(mut parser) = p.term.lock() {
-                            *parser = vt100::Parser::new(p.last_rows, p.last_cols, 1000);
+                            *parser = vt100::Parser::new(p.last_rows, p.last_cols, app.history_limit);
                         }
                     }
                 }
@@ -2310,21 +2338,40 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 }
                 CtrlReq::DisplayPopup(command, width, height, close_on_exit) => {
                     if !command.is_empty() {
-                        #[cfg(windows)]
-                        let process = std::process::Command::new("cmd")
-                            .args(["/C", &command])
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped())
-                            .spawn()
-                            .ok();
+                        // Try to spawn with PTY for interactive programs (fzf, etc.)
+                        let pty_result = portable_pty::PtySystemSelection::default()
+                            .get()
+                            .ok()
+                            .and_then(|pty_sys| {
+                                let pty_size = portable_pty::PtySize { rows: height.saturating_sub(2), cols: width.saturating_sub(2), pixel_width: 0, pixel_height: 0 };
+                                let pair = pty_sys.openpty(pty_size).ok()?;
+                                let mut cmd_builder = portable_pty::CommandBuilder::new(if cfg!(windows) { "cmd" } else { "sh" });
+                                if cfg!(windows) { cmd_builder.args(["/C", &command]); } else { cmd_builder.args(["-c", &command]); }
+                                let child = pair.slave.spawn_command(cmd_builder).ok()?;
+                                let term = std::sync::Arc::new(std::sync::Mutex::new(vt100::Parser::new(pty_size.rows, pty_size.cols, 0)));
+                                let term_reader = term.clone();
+                                if let Ok(mut reader) = pair.master.try_clone_reader() {
+                                    std::thread::spawn(move || {
+                                        let mut buf = [0u8; 8192];
+                                        loop {
+                                            match reader.read(&mut buf) {
+                                                Ok(n) if n > 0 => { let mut p = term_reader.lock().unwrap(); p.process(&buf[..n]); }
+                                                _ => break,
+                                            }
+                                        }
+                                    });
+                                }
+                                Some(PopupPty { master: pair.master, child, term })
+                            });
                         
                         app.mode = Mode::PopupMode {
                             command: command.clone(),
                             output: String::new(),
-                            process,
+                            process: None,
                             width,
                             height,
                             close_on_exit,
+                            popup_pty: pty_result,
                         };
                     } else {
                         app.mode = Mode::PopupMode {
@@ -2334,6 +2381,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                             width,
                             height,
                             close_on_exit: true,
+                            popup_pty: None,
                         };
                     }
                 }
@@ -2417,6 +2465,33 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     let prev_idx = (current_idx + LAYOUTS.len() - 1) % LAYOUTS.len();
                     apply_layout(&mut app, LAYOUTS[prev_idx]);
                     state_dirty = true;
+                }
+                CtrlReq::FocusIn => {
+                    if app.focus_events {
+                        // Forward focus-in escape sequence to all panes in active window
+                        let win = &mut app.windows[app.active_idx];
+                        fn send_focus_seq(node: &mut Node, seq: &[u8]) {
+                            match node {
+                                Node::Leaf(p) => { let _ = p.master.write_all(seq); let _ = p.master.flush(); }
+                                Node::Split { children, .. } => { for c in children { send_focus_seq(c, seq); } }
+                            }
+                        }
+                        send_focus_seq(&mut win.root, b"\x1b[I");
+                    }
+                    hook_event = Some("pane-focus-in");
+                }
+                CtrlReq::FocusOut => {
+                    if app.focus_events {
+                        let win = &mut app.windows[app.active_idx];
+                        fn send_focus_seq(node: &mut Node, seq: &[u8]) {
+                            match node {
+                                Node::Leaf(p) => { let _ = p.master.write_all(seq); let _ = p.master.flush(); }
+                                Node::Split { children, .. } => { for c in children { send_focus_seq(c, seq); } }
+                            }
+                        }
+                        send_focus_seq(&mut win.root, b"\x1b[O");
+                    }
+                    hook_event = Some("pane-focus-out");
                 }
                 CtrlReq::ResizeWindow(_dim, _size) => {
                     // On Windows, window size is controlled by the terminal emulator;

@@ -421,23 +421,69 @@ pub fn resize_pane_absolute(app: &mut AppState, axis: &str, target: u16) {
     }
 }
 
-pub fn rotate_panes(app: &mut AppState, _reverse: bool) {
+pub fn rotate_panes(app: &mut AppState, reverse: bool) {
     let win = &mut app.windows[app.active_idx];
     match &mut win.root {
         Node::Split { children, .. } if children.len() >= 2 => {
-            let last_idx = children.len() - 1;
-            children.swap(0, last_idx);
+            if reverse {
+                // Rotate counter-clockwise: first element goes to end
+                let first = children.remove(0);
+                children.push(first);
+            } else {
+                // Rotate clockwise: last element goes to front
+                let last = children.pop().unwrap();
+                children.insert(0, last);
+            }
         }
         _ => {}
     }
 }
 
 pub fn break_pane_to_window(app: &mut AppState) {
-    let pty_system = match PtySystemSelection::default().get() {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    let _ = create_window(&*pty_system, app, None);
+    let src_idx = app.active_idx;
+    let src_path = app.windows[src_idx].active_path.clone();
+    
+    // Extract the active pane from the current window using tree operations
+    let src_root = std::mem::replace(&mut app.windows[src_idx].root,
+        Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] });
+    let (remaining, extracted) = crate::tree::extract_node(src_root, &src_path);
+    
+    if let Some(pane_node) = extracted {
+        let src_empty = remaining.is_none();
+        if let Some(rem) = remaining {
+            app.windows[src_idx].root = rem;
+            app.windows[src_idx].active_path = crate::tree::first_leaf_path(&app.windows[src_idx].root);
+        }
+        
+        // Determine the window name from the pane
+        let win_name = match &pane_node {
+            Node::Leaf(p) => p.title.clone(),
+            _ => format!("win {}", app.windows.len() + 1),
+        };
+        
+        // Create new window containing the extracted pane
+        app.windows.push(Window {
+            root: pane_node,
+            active_path: vec![],
+            name: win_name,
+            id: app.next_win_id,
+            activity_flag: false,
+            last_seen_version: 0,
+        });
+        app.next_win_id += 1;
+        
+        if src_empty {
+            app.windows.remove(src_idx);
+        }
+        
+        // Switch to the new window
+        app.active_idx = app.windows.len() - 1;
+    } else {
+        // Extraction failed — restore
+        if let Some(rem) = remaining {
+            app.windows[src_idx].root = rem;
+        }
+    }
 }
 
 pub fn respawn_active_pane(app: &mut AppState) -> io::Result<()> {
@@ -451,7 +497,7 @@ pub fn respawn_active_pane(app: &mut AppState) -> io::Result<()> {
     let mut shell_cmd = detect_shell();
     set_tmux_env(&mut shell_cmd, pane_id, app.control_port);
     let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
-    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, 1000)));
+    let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, app.history_limit)));
     let term_reader = term.clone();
     let mut reader = pair.master.try_clone_reader().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("clone reader error: {e}")))?;
     
