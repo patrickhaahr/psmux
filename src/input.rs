@@ -109,6 +109,7 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     if idx >= app.window_base_index {
                         let internal_idx = idx - app.window_base_index;
                         if internal_idx < app.windows.len() {
+                            app.last_window_idx = app.active_idx;
                             app.active_idx = internal_idx;
                         }
                     }
@@ -123,12 +124,14 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                 }
                 KeyCode::Char('n') => {
                     if !app.windows.is_empty() {
+                        app.last_window_idx = app.active_idx;
                         app.active_idx = (app.active_idx + 1) % app.windows.len();
                     }
                     true
                 }
                 KeyCode::Char('p') => {
                     if !app.windows.is_empty() {
+                        app.last_window_idx = app.active_idx;
                         app.active_idx = (app.active_idx + app.windows.len() - 1) % app.windows.len();
                     }
                     true
@@ -495,6 +498,19 @@ pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
                     app.mode = Mode::Passthrough; 
                     app.copy_anchor = None; 
                     app.copy_pos = None; 
+                    app.copy_scroll_offset = 0;
+                    let win = &mut app.windows[app.active_idx];
+                    if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
+                        if let Ok(mut parser) = p.term.lock() {
+                            parser.screen_mut().set_scrollback(0);
+                        }
+                    }
+                }
+                // Ctrl+C exits copy mode (tmux parity, fixes #25)
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.mode = Mode::Passthrough;
+                    app.copy_anchor = None;
+                    app.copy_pos = None;
                     app.copy_scroll_offset = 0;
                     let win = &mut app.windows[app.active_idx];
                     if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
@@ -1429,6 +1445,18 @@ pub fn send_key_to_active(app: &mut AppState, k: &str) -> io::Result<()> {
             "M-w" | "m-w" => { yank_selection(app)?; app.mode = Mode::Passthrough; app.copy_scroll_offset = 0; app.copy_pos = None; }
             "C-s" | "c-s" => { app.mode = Mode::CopySearch { input: String::new(), forward: true }; }
             "C-r" | "c-r" => { app.mode = Mode::CopySearch { input: String::new(), forward: false }; }
+            "C-c" | "c-c" => {
+                app.mode = Mode::Passthrough;
+                app.copy_anchor = None;
+                app.copy_pos = None;
+                app.copy_scroll_offset = 0;
+                let win = &mut app.windows[app.active_idx];
+                if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) {
+                    if let Ok(mut parser) = p.term.lock() {
+                        parser.screen_mut().set_scrollback(0);
+                    }
+                }
+            }
             "C-g" | "c-g" => {
                 app.mode = Mode::Passthrough;
                 app.copy_anchor = None;
