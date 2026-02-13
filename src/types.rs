@@ -29,6 +29,9 @@ pub struct Pane {
     pub last_infer_title: Instant,
     /// True when the child process has exited but remain-on-exit keeps the pane visible.
     pub dead: bool,
+    /// Cached VT bridge detection result (for mouse injection).
+    /// Updated on first mouse event and refreshed every 2 seconds.
+    pub vt_bridge_cache: Option<(Instant, bool)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -547,6 +550,11 @@ pub enum CtrlReq {
     FocusIn,
     FocusOut,
 }
+
+/// Global flag set by PTY reader threads when new output arrives.
+/// The server loop checks this to use a shorter recv_timeout, reducing
+/// keystroke-to-display latency for nested shells (e.g. WSL inside pwsh).
+pub static PTY_DATA_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Wait-for operation types
 #[derive(Clone, Copy)]

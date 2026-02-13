@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Read, Write};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::env;
 use std::net::TcpListener;
 
@@ -13,6 +13,28 @@ use crate::platform::install_console_ctrl_handler;
 use crate::cli::parse_target;
 use crate::pane::*;
 use crate::tree::{self, *};
+
+/// Serialize key_tables into a compact JSON array for syncing to the client.
+/// Format: [{"t":"prefix","k":"x","c":"split-window -v","r":false}, ...]
+fn serialize_bindings_json(app: &AppState) -> String {
+    use crate::commands::format_action;
+    use crate::config::format_key_binding;
+    let mut out = String::from("[");
+    let mut first = true;
+    for (table_name, binds) in &app.key_tables {
+        for bind in binds {
+            if !first { out.push(','); }
+            first = false;
+            let key_str = json_escape_string(&format_key_binding(&bind.key));
+            let cmd_str = json_escape_string(&format_action(&bind.action));
+            let tbl_str = json_escape_string(table_name);
+            out.push_str(&format!("{{\"t\":\"{}\",\"k\":\"{}\",\"c\":\"{}\",\"r\":{}}}",
+                tbl_str, key_str, cmd_str, bind.repeat));
+        }
+    }
+    out.push(']');
+    out
+}
 
 /// Escape a string for embedding inside a JSON double-quoted value.
 /// Handles backslashes, double-quotes, and control characters.
@@ -1125,16 +1147,9 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
     let mut cached_base_index: usize = 0;
     let mut cached_pred_dim: bool = false;
     let mut cached_status_style = String::new();
+    let mut cached_bindings_json = String::from("[]");
     // Reusable buffer for building the combined JSON envelope.
     let mut combined_buf = String::with_capacity(32768);
-    // Deferred dump-state: when we send PTY input in the same batch as a
-    // DumpState request, the ConPTY hasn't had time to echo yet.  Instead of
-    // serialising a stale frame, we defer the response and wait for the reader
-    // thread to indicate new data is available (data_version bump) or a short
-    // timeout (3ms), whichever comes first.
-    let mut deferred_dump: Option<mpsc::Sender<String>> = None;
-    let mut deferred_data_version: u64 = 0;
-    let mut deferred_at: Option<std::time::Instant> = None;
 
     /// Sum data_version counters across all panes in the active window.
     fn combined_data_version(app: &AppState) -> u64 {
@@ -1241,95 +1256,37 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
         }
     }
 
+    // Track when we recently sent keystrokes to the PTY.  While waiting
+    // for the echo to appear we use a much shorter recv_timeout (1ms vs 5ms)
+    // so that dump-state requests are served with minimal delay.  This is
+    // critical for nested-shell latency (e.g. WSL inside pwsh) where the
+    // echo path goes through ConPTY → pwsh → WSL → echo → ConPTY and can
+    // take 10-30ms.  Without this, each "no-change" polling cycle costs up
+    // to 5ms, adding cumulative latency visible as heavy input lag.
+    let mut echo_pending_until: Option<Instant> = None;
+
     loop {
-        let mut sent_pty_input = false;
-        let mut did_work = false;
-
-        // ── Check if deferred dump-state can be served ──────────────────
-        if let Some(ref resp) = deferred_dump {
-            let now_ver = combined_data_version(&app);
-            let timed_out = deferred_at.map_or(false, |t| t.elapsed().as_millis() >= 3);
-            if now_ver != deferred_data_version || timed_out {
-                // Screen has been updated by the reader thread (or timeout).
-                // Force a fresh serialisation.
-                state_dirty = true;
-                // Rebuild metadata cache if structural changes happened.
-                if meta_dirty {
-                    cached_windows_json = list_windows_json_with_tabs(&app)?;
-                    cached_tree_json = list_tree_json(&app)?;
-                    cached_prefix_str = format_key_binding(&app.prefix_key);
-                    cached_base_index = app.window_base_index;
-                    cached_pred_dim = app.prediction_dimming;
-                    cached_status_style = app.status_style.clone();
-                    meta_dirty = false;
-                }
-                let layout_json = dump_layout_json_fast(&mut app)?;
-                // monitor-activity: flag non-active windows with output
-                check_window_activity(&mut app);
-
-                // set-titles: emit terminal title escape sequence
-                if app.set_titles && app.attached_clients > 0 {
-                    let title_fmt = if app.set_titles_string.is_empty() {
-                        "#S:#I:#W".to_string()
-                    } else {
-                        app.set_titles_string.clone()
-                    };
-                    let expanded_title = expand_format(&title_fmt, &app);
-                    // Cache to avoid re-emitting identical title every frame
-                    use std::sync::OnceLock;
-                    use std::sync::Mutex as StdMutex;
-                    static LAST_TITLE: OnceLock<StdMutex<Option<String>>> = OnceLock::new();
-                    let cache = LAST_TITLE.get_or_init(|| StdMutex::new(None));
-                    let mut guard = cache.lock().unwrap();
-                    let changed = match guard.as_ref() {
-                        Some(prev) => prev != &expanded_title,
-                        None => true,
-                    };
-                    if changed {
-                        // OSC 2 (set window title) + BEL
-                        let _ = std::io::Write::write_all(
-                            &mut std::io::stdout(),
-                            format!("\x1b]2;{}\x07", expanded_title).as_bytes(),
-                        );
-                        let _ = std::io::Write::flush(&mut std::io::stdout());
-                        *guard = Some(expanded_title);
-                    }
-                }
-                combined_buf.clear();
-                let ss_escaped = json_escape_string(&cached_status_style);
-                let sl_expanded = json_escape_string(&expand_format(&app.status_left, &app));
-                let sr_expanded = json_escape_string(&expand_format(&app.status_right, &app));
-                let pbs_escaped = json_escape_string(&app.pane_border_style);
-                let pabs_escaped = json_escape_string(&app.pane_active_border_style);
-                let wsf_escaped = json_escape_string(&app.window_status_format);
-                let wscf_escaped = json_escape_string(&app.window_status_current_format);
-                let wss_escaped = json_escape_string(&app.window_status_separator);
-                let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
-                    "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"clock_mode\":{}}}",
-                    layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, wsf_escaped, wscf_escaped, wss_escaped,
-                    matches!(app.mode, Mode::ClockMode),
-                ));
-                cached_dump_state.clear();
-                cached_dump_state.push_str(&combined_buf);
-                cached_data_version = combined_data_version(&app);
-                state_dirty = false;
-                let _ = resp.send(combined_buf.clone());
-                deferred_dump = None;
-                deferred_at = None;
-            }
+        // Adaptive timeout: 1ms when echo-pending or fresh PTY data just
+        // arrived (so we can serve the waiting dump-state request quickly),
+        // 5ms otherwise to stay idle-friendly.
+        let data_ready = crate::types::PTY_DATA_READY.swap(false, std::sync::atomic::Ordering::AcqRel);
+        if data_ready {
+            state_dirty = true;
         }
-
-        // Block on first message with timeout — wakes instantly when a message arrives.
-        // Use 2ms when a deferred dump is pending (fast wakeup to check data_version),
-        // otherwise 5ms for normal housekeeping.
-        let timeout_ms = if deferred_dump.is_some() { 2 } else { 5 };
+        let echo_active = echo_pending_until.map_or(false, |t| t.elapsed().as_millis() < 50);
+        let timeout_ms: u64 = if echo_active || data_ready { 1 } else { 5 };
         if let Some(rx) = app.control_rx.as_ref() {
             if let Ok(req) = rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-                did_work = true;
                 let mut pending = vec![req];
                 // Drain any additional queued messages without blocking
                 while let Ok(r) = rx.try_recv() {
                     pending.push(r);
+                }
+                // Also check if fresh PTY output arrived while we were
+                // waiting – mark state dirty so DumpState produces a full
+                // frame instead of "NC".
+                if crate::types::PTY_DATA_READY.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    state_dirty = true;
                 }
                 // Process key/command inputs BEFORE dump-state requests.
                 // This ensures ConPTY receives keystrokes before we serialize
@@ -1432,22 +1389,13 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                             }
                         }
                     }
+                    // Fast-path: nothing changed at all → 2-byte "NC" marker
+                    // instead of cloning 50-100KB of JSON.
                     if !state_dirty
                         && !cached_dump_state.is_empty()
                         && cached_data_version == combined_data_version(&app)
                     {
-                        let _ = resp.send(cached_dump_state.clone());
-                        continue;
-                    }
-                    // If we just sent PTY input in this batch, the ConPTY hasn't
-                    // had time to echo yet.  Defer the dump-state response until
-                    // the reader thread processes new output (data_version bump)
-                    // or a short timeout expires.  This avoids sending a stale
-                    // frame that the client renders and immediately replaces.
-                    if sent_pty_input {
-                        deferred_data_version = combined_data_version(&app);
-                        deferred_dump = Some(resp);
-                        deferred_at = Some(std::time::Instant::now());
+                        let _ = resp.send("NC".to_string());
                         continue;
                     }
                     // Rebuild metadata cache if structural changes happened.
@@ -1458,9 +1406,12 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         cached_base_index = app.window_base_index;
                         cached_pred_dim = app.prediction_dimming;
                         cached_status_style = app.status_style.clone();
+                        cached_bindings_json = serialize_bindings_json(&app);
                         meta_dirty = false;
                     }
+                    let _t_layout = std::time::Instant::now();
                     let layout_json = dump_layout_json_fast(&mut app)?;
+                    let _layout_ms = _t_layout.elapsed().as_micros();
                     combined_buf.clear();
                     let ss_escaped = json_escape_string(&cached_status_style);
                     let sl_expanded = json_escape_string(&expand_format(&app.status_left, &app));
@@ -1471,20 +1422,37 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     let wscf_escaped = json_escape_string(&app.window_status_current_format);
                     let wss_escaped = json_escape_string(&app.window_status_separator);
                     let _ = std::fmt::Write::write_fmt(&mut combined_buf, format_args!(
-                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"clock_mode\":{}}}",
+                        "{{\"layout\":{},\"windows\":{},\"prefix\":\"{}\",\"tree\":{},\"base_index\":{},\"prediction_dimming\":{},\"status_style\":\"{}\",\"status_left\":\"{}\",\"status_right\":\"{}\",\"pane_border_style\":\"{}\",\"pane_active_border_style\":\"{}\",\"wsf\":\"{}\",\"wscf\":\"{}\",\"wss\":\"{}\",\"clock_mode\":{},\"bindings\":{}}}",
                         layout_json, cached_windows_json, cached_prefix_str, cached_tree_json, cached_base_index, cached_pred_dim, ss_escaped, sl_expanded, sr_expanded, pbs_escaped, pabs_escaped, wsf_escaped, wscf_escaped, wss_escaped,
-                        matches!(app.mode, Mode::ClockMode),
+                        matches!(app.mode, Mode::ClockMode), cached_bindings_json,
                     ));
                     cached_dump_state.clear();
                     cached_dump_state.push_str(&combined_buf);
                     cached_data_version = combined_data_version(&app);
                     state_dirty = false;
-                    sent_pty_input = false;
+                    // Timing log: dump-state build time
+                    if std::env::var("PSMUX_LATENCY_LOG").unwrap_or_default() == "1" {
+                        let total_us = _t_layout.elapsed().as_micros();
+                        use std::io::Write as _;
+                        static SRV_LOG_INIT: std::sync::Once = std::sync::Once::new();
+                        static mut SRV_LOG: Option<std::sync::Mutex<std::fs::File>> = None;
+                        SRV_LOG_INIT.call_once(|| {
+                            let p = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\gj".into())).join("psmux_server_latency.log");
+                            if let Ok(f) = std::fs::File::create(p) {
+                                unsafe { SRV_LOG = Some(std::sync::Mutex::new(f)); }
+                            }
+                        });
+                        if let Some(ref mtx) = unsafe { &SRV_LOG } {
+                            if let Ok(mut f) = mtx.lock() {
+                                let _ = writeln!(f, "[SRV] dump: layout={}us total={}us json_len={}", _layout_ms, total_us, combined_buf.len());
+                            }
+                        }
+                    }
                     let _ = resp.send(combined_buf.clone());
                 }
-                CtrlReq::SendText(s) => { send_text_to_active(&mut app, &s)?; sent_pty_input = true; }
-                CtrlReq::SendKey(k) => { send_key_to_active(&mut app, &k)?; sent_pty_input = true; }
-                CtrlReq::SendPaste(s) => { send_text_to_active(&mut app, &s)?; sent_pty_input = true; }
+                CtrlReq::SendText(s) => { send_text_to_active(&mut app, &s)?; echo_pending_until = Some(Instant::now()); }
+                CtrlReq::SendKey(k) => { send_key_to_active(&mut app, &k)?; echo_pending_until = Some(Instant::now()); }
+                CtrlReq::SendPaste(s) => { send_text_to_active(&mut app, &s)?; echo_pending_until = Some(Instant::now()); }
                 CtrlReq::ZoomPane => { toggle_zoom(&mut app); hook_event = Some("after-resize-pane"); }
                 CtrlReq::CopyEnter => { enter_copy_mode(&mut app); }
                 CtrlReq::CopyEnterPageUp => {
@@ -1527,7 +1495,6 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     if let Some(p) = active_pane_mut(&mut win.root, &win.active_path) { p.title = title; }
                 }
                 CtrlReq::SendKeys(keys, literal) => {
-                    sent_pty_input = true;
                     let in_copy = matches!(app.mode, Mode::CopyMode | Mode::CopySearch { .. });
                     if in_copy {
                         // In copy/search mode — route through mode-aware handlers
@@ -1641,6 +1608,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                             }
                         }
                     }
+                    echo_pending_until = Some(Instant::now());
                 }
                 CtrlReq::SendKeysX(cmd) => {
                     // send-keys -X: dispatch copy-mode commands by name
@@ -2136,6 +2104,8 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                             table.push(Bind { key: kc, action: act, repeat });
                         }
                     }
+                    meta_dirty = true;
+                    state_dirty = true;
                 }
                 CtrlReq::UnbindKey(key) => {
                     if let Some(kc) = parse_key_string(&key) {
@@ -2143,6 +2113,8 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                             table.retain(|b| b.key != kc);
                         }
                     }
+                    meta_dirty = true;
+                    state_dirty = true;
                 }
                 CtrlReq::ListKeys(resp) => {
                     let mut output = String::from(
@@ -2673,7 +2645,6 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                             let _ = p.master.flush();
                         }
                     }
-                    sent_pty_input = true;
                 }
                 CtrlReq::PrevLayout => {
                     // Cycle layouts in reverse using the same logic as cycle_layout/NextLayout
@@ -2750,6 +2721,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
             // A pane exited naturally - resize remaining panes to fill the space
             resize_all_panes(&mut app);
             state_dirty = true;
+            meta_dirty = true;
         }
         if all_empty {
             let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();

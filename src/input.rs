@@ -997,7 +997,7 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
         let win = &mut app.windows[app.active_idx];
         fn write_all_panes(node: &mut Node, data: &[u8]) {
             match node {
-                Node::Leaf(p) if !p.dead => { let _ = p.master.write_all(data); }
+                Node::Leaf(p) if !p.dead => { let _ = p.master.write_all(data); let _ = p.master.flush(); }
                 Node::Leaf(_) => {}
                 Node::Split { children, .. } => { for c in children { write_all_panes(c, data); } }
             }
@@ -1008,6 +1008,7 @@ pub fn forward_key_to_active(app: &mut AppState, key: KeyEvent) -> io::Result<()
         if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
             if !active.dead {
                 let _ = active.master.write_all(&encoded);
+                let _ = active.master.flush();
             }
         }
     }
@@ -1105,21 +1106,36 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
                 }
             }
 
-            // Forward left-click to child pane via Windows Console API
+            // Forward left-click to child pane
             if !on_border {
                 if let Some(area) = active_area {
                     if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                         let col = me.column.saturating_sub(area.x + 1) as i16;
                         let row = me.row.saturating_sub(area.y + 1) as i16;
-                        if active.child_pid.is_none() {
-                            active.child_pid = unsafe { crate::platform::mouse_inject::get_child_pid(&*active.child) };
-                        }
-                        if let Some(pid) = active.child_pid {
-                            crate::platform::mouse_inject::send_mouse_event(
-                                pid, col, row,
-                                crate::platform::mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED, 0,
-                                true,
-                            );
+                        // Check if child has requested VT mouse protocol
+                        let (mode, enc) = {
+                            if let Ok(parser) = active.term.lock() {
+                                let s = parser.screen();
+                                (s.mouse_protocol_mode(), s.mouse_protocol_encoding())
+                            } else {
+                                (vt100::MouseProtocolMode::None, vt100::MouseProtocolEncoding::Default)
+                            }
+                        };
+                        if mode != vt100::MouseProtocolMode::None {
+                            let vt_col = (col + 1).max(1) as u16;
+                            let vt_row = (row + 1).max(1) as u16;
+                            write_mouse_event(&mut active.master, 0, vt_col, vt_row, true, enc);
+                        } else {
+                            if active.child_pid.is_none() {
+                                active.child_pid = unsafe { crate::platform::mouse_inject::get_child_pid(&*active.child) };
+                            }
+                            if let Some(pid) = active.child_pid {
+                                crate::platform::mouse_inject::send_mouse_event(
+                                    pid, col, row,
+                                    crate::platform::mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED, 0,
+                                    true,
+                                );
+                            }
                         }
                     }
                 }
@@ -1138,11 +1154,23 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
             if was_dragging {
                 resize_all_panes(app);
             } else if let Some(area) = active_area {
-                // Forward mouse release via Windows Console API
+                // Forward mouse release
                 if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                     let col = me.column.saturating_sub(area.x + 1) as i16;
                     let row = me.row.saturating_sub(area.y + 1) as i16;
-                    if let Some(pid) = active.child_pid {
+                    let (mode, enc) = {
+                        if let Ok(parser) = active.term.lock() {
+                            let s = parser.screen();
+                            (s.mouse_protocol_mode(), s.mouse_protocol_encoding())
+                        } else {
+                            (vt100::MouseProtocolMode::None, vt100::MouseProtocolEncoding::Default)
+                        }
+                    };
+                    if mode != vt100::MouseProtocolMode::None {
+                        let vt_col = (col + 1).max(1) as u16;
+                        let vt_row = (row + 1).max(1) as u16;
+                        write_mouse_event(&mut active.master, 0, vt_col, vt_row, false, enc);
+                    } else if let Some(pid) = active.child_pid {
                         crate::platform::mouse_inject::send_mouse_event(pid, col, row, 0, 0, true);
                     }
                 }
@@ -1158,18 +1186,33 @@ pub fn handle_mouse(app: &mut AppState, me: MouseEvent, window_area: Rect) -> io
             if let Some(d) = &app.drag {
                 adjust_split_sizes(&mut win.root, d, me.column, me.row);
             } else {
-                // Forward drag via Windows Console API
+                // Forward drag to child pane
                 if let Some(area) = active_area {
                     if let Some(active) = active_pane_mut(&mut win.root, &win.active_path) {
                         let col = me.column.saturating_sub(area.x + 1) as i16;
                         let row = me.row.saturating_sub(area.y + 1) as i16;
-                        if let Some(pid) = active.child_pid {
-                            crate::platform::mouse_inject::send_mouse_event(
-                                pid, col, row,
-                                crate::platform::mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED,
-                                crate::platform::mouse_inject::MOUSE_MOVED,
-                                true,
-                            );
+                        let (mode, enc) = {
+                            if let Ok(parser) = active.term.lock() {
+                                let s = parser.screen();
+                                (s.mouse_protocol_mode(), s.mouse_protocol_encoding())
+                            } else {
+                                (vt100::MouseProtocolMode::None, vt100::MouseProtocolEncoding::Default)
+                            }
+                        };
+                        if mode != vt100::MouseProtocolMode::None {
+                            let vt_col = (col + 1).max(1) as u16;
+                            let vt_row = (row + 1).max(1) as u16;
+                            // button 0 + 32 = drag modifier
+                            write_mouse_event(&mut active.master, 32, vt_col, vt_row, true, enc);
+                        } else {
+                            if let Some(pid) = active.child_pid {
+                                crate::platform::mouse_inject::send_mouse_event(
+                                    pid, col, row,
+                                    crate::platform::mouse_inject::FROM_LEFT_1ST_BUTTON_PRESSED,
+                                    crate::platform::mouse_inject::MOUSE_MOVED,
+                                    true,
+                                );
+                            }
                         }
                     }
                 }
@@ -1547,6 +1590,7 @@ pub fn send_key_to_active(app: &mut AppState, k: &str) -> io::Result<()> {
             }
             _ => {}
         }
+        let _ = p.master.flush();
     }
     Ok(())
 }

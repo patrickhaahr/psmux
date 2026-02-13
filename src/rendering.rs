@@ -155,39 +155,84 @@ pub fn render_node(
                 }
                 cur_path.pop();
             }
-            // Draw separator lines — color each cell based on adjacency to active pane rect
+            // Draw separator lines — color each cell based on adjacency to active pane rect.
+            // When both neighbours are direct leaves, use the midpoint half-highlight
+            // so the colored half indicates which side is active.
             let buf = f.buffer_mut();
             for i in 0..children.len().saturating_sub(1) {
                 if i >= rects.len() { break; }
+                let both_leaves = matches!(&children[i], Node::Leaf(_))
+                    && matches!(children.get(i + 1), Some(Node::Leaf(_)));
+
                 if is_horizontal {
                     let sep_x = rects[i].x + rects[i].width;
                     if sep_x < buf.area.x + buf.area.width {
-                        for y in area.y..area.y + area.height {
-                            let active = active_rect.map_or(false, |ar| {
-                                y >= ar.y && y < ar.y + ar.height
-                                && (sep_x == ar.x + ar.width || sep_x + 1 == ar.x)
-                            });
-                            let sty = if active { active_border_style } else { border_style };
-                            let idx = (y - buf.area.y) as usize * buf.area.width as usize + (sep_x - buf.area.x) as usize;
-                            if idx < buf.content.len() {
-                                buf.content[idx].set_char('│');
-                                buf.content[idx].set_style(sty);
+                        if both_leaves {
+                            let left_active = cur_path.len() < active_path.len()
+                                && active_path[..cur_path.len()] == cur_path[..]
+                                && active_path[cur_path.len()] == i;
+                            let right_active = cur_path.len() < active_path.len()
+                                && active_path[..cur_path.len()] == cur_path[..]
+                                && active_path[cur_path.len()] == i + 1;
+                            let left_sty = if left_active { active_border_style } else { border_style };
+                            let right_sty = if right_active { active_border_style } else { border_style };
+                            let mid_y = area.y + area.height / 2;
+                            for y in area.y..area.y + area.height {
+                                let sty = if y < mid_y { left_sty } else { right_sty };
+                                let idx = (y - buf.area.y) as usize * buf.area.width as usize + (sep_x - buf.area.x) as usize;
+                                if idx < buf.content.len() {
+                                    buf.content[idx].set_char('│');
+                                    buf.content[idx].set_style(sty);
+                                }
+                            }
+                        } else {
+                            for y in area.y..area.y + area.height {
+                                let active = active_rect.map_or(false, |ar| {
+                                    y >= ar.y && y < ar.y + ar.height
+                                    && (sep_x == ar.x + ar.width || sep_x + 1 == ar.x)
+                                });
+                                let sty = if active { active_border_style } else { border_style };
+                                let idx = (y - buf.area.y) as usize * buf.area.width as usize + (sep_x - buf.area.x) as usize;
+                                if idx < buf.content.len() {
+                                    buf.content[idx].set_char('│');
+                                    buf.content[idx].set_style(sty);
+                                }
                             }
                         }
                     }
                 } else {
                     let sep_y = rects[i].y + rects[i].height;
                     if sep_y < buf.area.y + buf.area.height {
-                        for x in area.x..area.x + area.width {
-                            let active = active_rect.map_or(false, |ar| {
-                                x >= ar.x && x < ar.x + ar.width
-                                && (sep_y == ar.y + ar.height || sep_y + 1 == ar.y)
-                            });
-                            let sty = if active { active_border_style } else { border_style };
-                            let idx = (sep_y - buf.area.y) as usize * buf.area.width as usize + (x - buf.area.x) as usize;
-                            if idx < buf.content.len() {
-                                buf.content[idx].set_char('─');
-                                buf.content[idx].set_style(sty);
+                        if both_leaves {
+                            let top_active = cur_path.len() < active_path.len()
+                                && active_path[..cur_path.len()] == cur_path[..]
+                                && active_path[cur_path.len()] == i;
+                            let bot_active = cur_path.len() < active_path.len()
+                                && active_path[..cur_path.len()] == cur_path[..]
+                                && active_path[cur_path.len()] == i + 1;
+                            let top_sty = if top_active { active_border_style } else { border_style };
+                            let bot_sty = if bot_active { active_border_style } else { border_style };
+                            let mid_x = area.x + area.width / 2;
+                            for x in area.x..area.x + area.width {
+                                let sty = if x < mid_x { top_sty } else { bot_sty };
+                                let idx = (sep_y - buf.area.y) as usize * buf.area.width as usize + (x - buf.area.x) as usize;
+                                if idx < buf.content.len() {
+                                    buf.content[idx].set_char('─');
+                                    buf.content[idx].set_style(sty);
+                                }
+                            }
+                        } else {
+                            for x in area.x..area.x + area.width {
+                                let active = active_rect.map_or(false, |ar| {
+                                    x >= ar.x && x < ar.x + ar.width
+                                    && (sep_y == ar.y + ar.height || sep_y + 1 == ar.y)
+                                });
+                                let sty = if active { active_border_style } else { border_style };
+                                let idx = (sep_y - buf.area.y) as usize * buf.area.width as usize + (x - buf.area.x) as usize;
+                                if idx < buf.content.len() {
+                                    buf.content[idx].set_char('─');
+                                    buf.content[idx].set_style(sty);
+                                }
                             }
                         }
                     }

@@ -1049,19 +1049,37 @@ fn main() -> io::Result<()> {
             // bind-key - Bind a key to a command
             "bind-key" | "bind" => {
                 let cmd_str: String = cmd_args.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join(" ");
-                send_control(format!("{}\n", cmd_str))?;
+                match send_control(format!("{}\n", cmd_str)) {
+                    Ok(()) => {},
+                    Err(e) if e.to_string().contains("no session") => {
+                        eprintln!("warning: no active session; bind-key will take effect when set inside a session or via config file");
+                    },
+                    Err(e) => return Err(e),
+                }
                 return Ok(());
             }
             // unbind-key - Unbind a key
             "unbind-key" | "unbind" => {
                 let cmd_str: String = cmd_args.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join(" ");
-                send_control(format!("{}\n", cmd_str))?;
+                match send_control(format!("{}\n", cmd_str)) {
+                    Ok(()) => {},
+                    Err(e) if e.to_string().contains("no session") => {
+                        eprintln!("warning: no active session; unbind-key will take effect when set inside a session or via config file");
+                    },
+                    Err(e) => return Err(e),
+                }
                 return Ok(());
             }
             // set-option / set - Set an option
             "set-option" | "set" => {
                 let cmd_str: String = cmd_args.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join(" ");
-                send_control(format!("{}\n", cmd_str))?;
+                match send_control(format!("{}\n", cmd_str)) {
+                    Ok(()) => {},
+                    Err(e) if e.to_string().contains("no session") => {
+                        eprintln!("warning: no active session; option will take effect when set inside a session or via config file");
+                    },
+                    Err(e) => return Err(e),
+                }
                 return Ok(());
             }
             // show-options / show / show-window-options / showw - Show options
