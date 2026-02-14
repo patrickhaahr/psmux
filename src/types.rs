@@ -326,7 +326,17 @@ impl AppState {
             copy_search_forward: true,
             copy_find_char_pending: None,
             display_map: Vec::new(),
-            key_tables: std::collections::HashMap::new(),
+            key_tables: {
+                let mut tables = std::collections::HashMap::new();
+                tables.entry("root".to_string()).or_insert_with(Vec::new).push(
+                    Bind {
+                        key: (crossterm::event::KeyCode::Char('q'), crossterm::event::KeyModifiers::CONTROL),
+                        action: Action::Detach,
+                        repeat: false,
+                    },
+                );
+                tables
+            },
             control_rx: None,
             control_port: None,
             session_name,

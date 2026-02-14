@@ -499,7 +499,15 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                         let is_prefix = (key.code, key.modifiers) == prefix_key
                             || prefix_raw_char.map_or(false, |c| matches!(key.code, KeyCode::Char(ch) if ch == c));
 
-                        if is_ctrl_q { quit = true; }
+                        if is_ctrl_q {
+                            // Only quit if C-q is still bound in the root table
+                            let cq = (KeyCode::Char('q'), KeyModifiers::CONTROL);
+                            let bound = synced_bindings.iter().any(|b| {
+                                b.t == "root" && parse_key_string(&b.k).map_or(false, |k| k == cq)
+                                    && (b.c == "detach-client" || b.c == "detach")
+                            });
+                            if bound { quit = true; }
+                        }
                         // Overlay Esc must be checked BEFORE selection-Esc so that
                         // pressing Esc always closes the active overlay first.
                         else if matches!(key.code, KeyCode::Esc) && (command_input || renaming || pane_renaming || chooser || tree_chooser || session_chooser || confirm_cmd.is_some()) {
@@ -532,7 +540,11 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::
                             if let Some(entry) = synced_bindings.iter().find(|b| {
                                 b.t == "root" && parse_key_string(&b.k).map_or(false, |k| k == key_tuple)
                             }) {
-                                cmd_batch.push(format!("{}\n", entry.c));
+                                if entry.c == "detach-client" || entry.c == "detach" {
+                                    quit = true;
+                                } else {
+                                    cmd_batch.push(format!("{}\n", entry.c));
+                                }
                             }
                         }
                         else if prefix_armed {

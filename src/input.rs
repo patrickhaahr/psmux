@@ -37,12 +37,6 @@ fn write_mouse_event(master: &mut Box<dyn portable_pty::MasterPty>, button: u8, 
 }
 
 pub fn handle_key(app: &mut AppState, key: KeyEvent) -> io::Result<bool> {
-    let is_ctrl_q = (matches!(key.code, KeyCode::Char('q')) && key.modifiers.contains(KeyModifiers::CONTROL))
-        || matches!(key.code, KeyCode::Char('\x11'));
-    if is_ctrl_q {
-        return Ok(true);
-    }
-
     match app.mode {
         Mode::Passthrough => {
             let is_ctrl_b = (key.code, key.modifiers) == app.prefix_key
