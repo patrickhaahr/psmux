@@ -657,6 +657,12 @@ fn main() -> io::Result<()> {
                     match cmd_args[i].as_str() {
                         "-a" => { cmd.push_str(" -a"); }
                         "-J" => { cmd.push_str(" -J"); }
+                        "-F" => {
+                            if let Some(f) = cmd_args.get(i + 1) {
+                                cmd.push_str(&format!(" -F \"{}\"", f.trim_matches('"').replace("\"", "\\\"")));
+                                i += 1;
+                            }
+                        }
                         "-t" => {
                             if let Some(t) = cmd_args.get(i + 1) {
                                 cmd.push_str(&format!(" -t {}", t));

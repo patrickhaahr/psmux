@@ -302,6 +302,49 @@ Test-Assert "new-window -P -F on regular session" ($regNwStr -match '^regtest:\d
 Start-Sleep -Milliseconds 500
 
 # ============================================================
+# Group 7: list-windows -F format engine
+# ============================================================
+Write-Host "`n[Test Group 7] list-windows -F format engine" -ForegroundColor Yellow
+
+& $exe new-session -d -s lswfmt 2>$null
+Start-Sleep -Seconds 2
+& $exe -t lswfmt new-window 2>$null
+Start-Sleep -Milliseconds 500
+
+# Test 7.1: default list-windows returns tmux-style output
+$lswDefault = & $exe -t lswfmt list-windows 2>&1
+$lswDefaultStr = ($lswDefault | Out-String).Trim()
+Test-Assert "list-windows default shows window info" ($lswDefaultStr -match '\d+:.*panes') "Got: '$lswDefaultStr'"
+
+# Test 7.2: list-windows -F '#{window_index}' returns numbers
+$lswIdx = & $exe -t lswfmt list-windows -F '#{window_index}' 2>&1
+$lswIdxStr = ($lswIdx | Out-String).Trim()
+Test-Assert "list-windows -F '#{window_index}' returns numbers" ($lswIdxStr -match '^\d+\r?\n\d+$') "Got: '$lswIdxStr'"
+
+# Test 7.3: list-windows -F '#{window_name}' returns names
+$lswName = & $exe -t lswfmt list-windows -F '#{window_name}' 2>&1
+$lswNameStr = ($lswName | Out-String).Trim()
+Test-Assert "list-windows -F '#{window_name}' returns names" ($lswNameStr.Length -gt 0) "Got: '$lswNameStr'"
+
+# Test 7.4: list-windows -F '#{pane_id}' returns %N format
+$lswPid = & $exe -t lswfmt list-windows -F '#{pane_id}' 2>&1
+$lswPidStr = ($lswPid | Out-String).Trim()
+Test-Assert "list-windows -F '#{pane_id}' returns %N" ($lswPidStr -match '%\d+') "Got: '$lswPidStr'"
+
+# Test 7.5: list-windows -F complex format
+$lswComplex = & $exe -t lswfmt list-windows -F '#{window_index}:#{window_name} #{session_name}' 2>&1
+$lswComplexStr = ($lswComplex | Out-String).Trim()
+Test-Assert "list-windows -F complex format works" ($lswComplexStr -match '\d+:\S+ lswfmt') "Got: '$lswComplexStr'"
+
+# Test 7.6: correct number of lines (2 windows = 2 lines)
+$lineCount = ($lswIdxStr -split "`n" | Where-Object { $_.Trim() }).Count
+Test-Assert "list-windows returns correct number of lines" ($lineCount -eq 2) "Got $lineCount lines"
+
+# Cleanup
+& $exe kill-session -t lswfmt 2>$null
+Start-Sleep -Milliseconds 500
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Host "`n================================================" -ForegroundColor Cyan
