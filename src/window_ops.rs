@@ -241,6 +241,10 @@ pub fn toggle_zoom(app: &mut AppState) {
             }
         }
     }
+    // Resize all panes so child PTYs are notified of the new dimensions.
+    // Without this, zoomed panes keep their pre-zoom size and child apps
+    // (neovim, bottom, etc.) render in only half the screen. (issue #35)
+    resize_all_panes(app);
 }
 
 /// Compute tab positions on the server side to match the client's status bar layout.
@@ -676,7 +680,7 @@ pub fn respawn_active_pane(app: &mut AppState) -> io::Result<()> {
     } else {
         detect_shell()
     };
-    set_tmux_env(&mut shell_cmd, pane_id, app.control_port);
+    set_tmux_env(&mut shell_cmd, pane_id, app.control_port, app.socket_name.as_deref());
     let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
     let term: Arc<Mutex<vt100::Parser>> = Arc::new(Mutex::new(vt100::Parser::new(size.rows, size.cols, app.history_limit)));
     let term_reader = term.clone();

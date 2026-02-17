@@ -127,7 +127,7 @@ const TMUX_COMMANDS: &[&str] = &[
     "wait-for (wait)",
 ];
 
-pub fn run_server(session_name: String, initial_command: Option<String>, raw_command: Option<Vec<String>>) -> io::Result<()> {
+pub fn run_server(session_name: String, socket_name: Option<String>, initial_command: Option<String>, raw_command: Option<Vec<String>>) -> io::Result<()> {
     // Write crash info to a log file when stderr is unavailable (detached server)
     std::panic::set_hook(Box::new(|info| {
         let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
@@ -143,6 +143,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("pty system error: {e}")))?;
 
     let mut app = AppState::new(session_name);
+    app.socket_name = socket_name;
     // Server starts detached with a reasonable default window size
     app.attached_clients = 0;
     load_config(&mut app);
@@ -172,10 +173,10 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
         format!("{:016x}", h.finish())
     };
     
-    // Write port and key to files
-    let regpath = format!("{}\\{}.port", dir, app.session_name);
+    // Write port and key to files (uses port_file_base for -L namespace support)
+    let regpath = format!("{}\\{}.port", dir, app.port_file_base());
     let _ = std::fs::write(&regpath, port.to_string());
-    let keypath = format!("{}\\{}.key", dir, app.session_name);
+    let keypath = format!("{}\\{}.key", dir, app.port_file_base());
     let _ = std::fs::write(&keypath, &session_key);
     
     // Try to set file permissions to user-only (Windows)
@@ -360,10 +361,22 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         let name: Option<String> = args.windows(2).find(|w| w[0] == "-n").map(|w| w[1].trim_matches('"').to_string());
                         let start_dir: Option<String> = args.windows(2).find(|w| w[0] == "-c").map(|w| w[1].trim_matches('"').to_string());
                         let detached = args.iter().any(|a| *a == "-d");
+                        let print_info = args.iter().any(|a| *a == "-P");
+                        let format_str: Option<String> = args.windows(2).find(|w| w[0] == "-F").map(|w| w[1].trim_matches('"').to_string());
                         let cmd_str: Option<String> = args.iter()
-                            .find(|a| !a.starts_with('-') && args.windows(2).all(|w| !(w[0] == "-n" && w[1] == **a)) && args.windows(2).all(|w| !(w[0] == "-c" && w[1] == **a)))
+                            .find(|a| !a.starts_with('-') && args.windows(2).all(|w| !(w[0] == "-n" && w[1] == **a)) && args.windows(2).all(|w| !(w[0] == "-c" && w[1] == **a)) && args.windows(2).all(|w| !(w[0] == "-F" && w[1] == **a)))
                             .map(|s| s.trim_matches('"').to_string());
-                        let _ = tx.send(CtrlReq::NewWindow(cmd_str, name, detached, start_dir));
+                        if print_info {
+                            let (rtx, rrx) = mpsc::channel::<String>();
+                            let _ = tx.send(CtrlReq::NewWindowPrint(cmd_str, name, detached, start_dir, format_str, rtx));
+                            if let Ok(text) = rrx.recv_timeout(Duration::from_millis(2000)) {
+                                let _ = write!(write_stream, "{}\n", text);
+                                let _ = write_stream.flush();
+                            }
+                            if !persistent { break; }
+                        } else {
+                            let _ = tx.send(CtrlReq::NewWindow(cmd_str, name, detached, start_dir));
+                        }
                     }
                     "split-window" | "splitw" => {
                         let kind = if args.iter().any(|a| *a == "-h") { LayoutKind::Horizontal } else { LayoutKind::Vertical };
@@ -469,7 +482,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     "send-key" => {
                         if let Some(payload) = args.get(0) { let _ = tx.send(CtrlReq::SendKey(payload.to_string())); }
                     }
-                    "zoom-pane" | "resizep" if args.iter().any(|a| *a == "-Z") => { let _ = tx.send(CtrlReq::ZoomPane); }
+                    "zoom-pane" | "resize-pane" | "resizep" if args.iter().any(|a| *a == "-Z") => { let _ = tx.send(CtrlReq::ZoomPane); }
                     "zoom-pane" => { let _ = tx.send(CtrlReq::ZoomPane); }
                     "copy-enter" => { let _ = tx.send(CtrlReq::CopyEnter); }
                     "copy-move" => {
@@ -641,12 +654,14 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         let _ = tx.send(CtrlReq::SwapPane(dir.to_string()));
                     }
                     "resize-pane" | "resizep" => {
+                        // Check for zoom toggle first (issue #35)
+                        if args.iter().any(|a| *a == "-Z") {
+                            let _ = tx.send(CtrlReq::ZoomPane);
+                        } else
                         // Check for absolute resize (-x N or -y N)
-                        let abs_x = args.windows(2).find(|w| w[0] == "-x").and_then(|w| w[1].parse::<u16>().ok());
-                        let abs_y = args.windows(2).find(|w| w[0] == "-y").and_then(|w| w[1].parse::<u16>().ok());
-                        if let Some(xv) = abs_x {
+                        if let Some(xv) = args.windows(2).find(|w| w[0] == "-x").and_then(|w| w[1].parse::<u16>().ok()) {
                             let _ = tx.send(CtrlReq::ResizePaneAbsolute("x".to_string(), xv));
-                        } else if let Some(yv) = abs_y {
+                        } else if let Some(yv) = args.windows(2).find(|w| w[0] == "-y").and_then(|w| w[1].parse::<u16>().ok()) {
                             let _ = tx.send(CtrlReq::ResizePaneAbsolute("y".to_string(), yv));
                         } else {
                             let amount = args.iter().find(|a| a.parse::<u16>().is_ok()).and_then(|s| s.parse::<u16>().ok()).unwrap_or(1);
@@ -1313,6 +1328,19 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     if detached { app.active_idx = prev_idx; }
                     resize_all_panes(&mut app); meta_dirty = true; hook_event = Some("after-new-window");
                 }
+                CtrlReq::NewWindowPrint(cmd, name, detached, start_dir, format_str, resp) => {
+                    let prev_idx = app.active_idx;
+                    if let Some(dir) = &start_dir { env::set_current_dir(dir).ok(); }
+                    let _ = create_window(&*pty_system, &mut app, cmd.as_deref());
+                    if let Some(n) = name { app.windows.last_mut().map(|w| w.name = n); }
+                    // Use full format engine for -P output (tmux compatible)
+                    let new_win_idx = app.windows.len() - 1;
+                    let fmt = format_str.as_deref().unwrap_or("#{session_name}:#{window_index}");
+                    let pane_info = crate::format::expand_format_for_window(fmt, &app, new_win_idx);
+                    if detached { app.active_idx = prev_idx; }
+                    let _ = resp.send(pane_info);
+                    resize_all_panes(&mut app); meta_dirty = true; hook_event = Some("after-new-window");
+                }
                 CtrlReq::SplitWindow(k, cmd, detached, start_dir, size_pct) => {
                     if let Some(dir) = &start_dir { env::set_current_dir(dir).ok(); }
                     let prev_path = app.windows[app.active_idx].active_path.clone();
@@ -1336,28 +1364,9 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                     let prev_path = app.windows[app.active_idx].active_path.clone();
                     let _ = split_active_with_command(&mut app, k, cmd.as_deref());
                     if let Some(_pct) = size_pct { }
-                    // Get pane info from the newly created pane (it's now the active pane)
-                    let pane_info = {
-                        let win = &app.windows[app.active_idx];
-                        if let Some(p) = crate::tree::active_pane(&win.root, &win.active_path) {
-                            let pane_id = p.id;
-                            let session = &app.session_name;
-                            let win_idx = app.active_idx + app.window_base_index;
-                            let pane_idx = crate::tree::pane_index_in_window(&win.root, &win.active_path).unwrap_or(0) + app.pane_base_index;
-                            // Apply format string or use default format
-                            if let Some(ref fmt) = format_str {
-                                fmt.replace("#{pane_id}", &format!("%{}", pane_id))
-                                   .replace("#{session_name}", session)
-                                   .replace("#{window_index}", &win_idx.to_string())
-                                   .replace("#{pane_index}", &pane_idx.to_string())
-                                   .replace("#{pane_title}", &p.title)
-                            } else {
-                                format!("{}:{}.{}", session, win_idx, pane_idx)
-                            }
-                        } else {
-                            String::new()
-                        }
-                    };
+                    // Use full format engine for -P output (tmux compatible)
+                    let fmt = format_str.as_deref().unwrap_or("#{session_name}:#{window_index}.#{pane_index}");
+                    let pane_info = crate::format::expand_format_for_window(fmt, &app, app.active_idx);
                     if detached {
                         let mut revert_path = prev_path;
                         revert_path.push(0);
@@ -1976,8 +1985,8 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         kill_all_children(&mut win.root);
                     }
                     let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-                    let regpath = format!("{}\\.psmux\\{}.port", home, app.session_name);
-                    let keypath = format!("{}\\.psmux\\{}.key", home, app.session_name);
+                    let regpath = format!("{}\\.psmux\\{}.port", home, app.port_file_base());
+                    let keypath = format!("{}\\.psmux\\{}.key", home, app.port_file_base());
                     let _ = std::fs::remove_file(&regpath);
                     let _ = std::fs::remove_file(&keypath);
                     std::process::exit(0);
@@ -1987,10 +1996,16 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 }
                 CtrlReq::RenameSession(name) => {
                     let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-                    let old_path = format!("{}\\.psmux\\{}.port", home, app.session_name);
-                    let old_keypath = format!("{}\\.psmux\\{}.key", home, app.session_name);
-                    let new_path = format!("{}\\.psmux\\{}.port", home, name);
-                    let new_keypath = format!("{}\\.psmux\\{}.key", home, name);
+                    let old_path = format!("{}\\.psmux\\{}.port", home, app.port_file_base());
+                    let old_keypath = format!("{}\\.psmux\\{}.key", home, app.port_file_base());
+                    // Compute new port file base with socket_name prefix
+                    let new_base = if let Some(ref sn) = app.socket_name {
+                        format!("{}__{}" , sn, name)
+                    } else {
+                        name.clone()
+                    };
+                    let new_path = format!("{}\\.psmux\\{}.port", home, new_base);
+                    let new_keypath = format!("{}\\.psmux\\{}.key", home, new_base);
                     if let Some(port) = app.control_port {
                         let _ = std::fs::remove_file(&old_path);
                         let _ = std::fs::write(&new_path, port.to_string());
@@ -2559,8 +2574,8 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                 }
                 CtrlReq::KillServer => {
                     let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-                    let regpath = format!("{}\\.psmux\\{}.port", home, app.session_name);
-                    let keypath = format!("{}\\.psmux\\{}.key", home, app.session_name);
+                    let regpath = format!("{}\\.psmux\\{}.port", home, app.port_file_base());
+                    let keypath = format!("{}\\.psmux\\{}.key", home, app.port_file_base());
                     let _ = std::fs::remove_file(&regpath);
                     let _ = std::fs::remove_file(&keypath);
                     std::process::exit(0);
@@ -2690,7 +2705,7 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
                         (chrono::Local::now() - app.created_at).num_seconds(),
                         {
                             let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-                            format!("{}\\.psmux\\{}.port", home, app.session_name)
+                            format!("{}\\.psmux\\{}.port", home, app.port_file_base())
                         }
                     );
                     let _ = resp.send(info);
@@ -2792,8 +2807,10 @@ pub fn run_server(session_name: String, initial_command: Option<String>, raw_com
         }
         if all_empty {
             let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-            let regpath = format!("{}\\.psmux\\{}.port", home, app.session_name);
+            let regpath = format!("{}\\.psmux\\{}.port", home, app.port_file_base());
+            let keypath = format!("{}\\.psmux\\{}.key", home, app.port_file_base());
             let _ = std::fs::remove_file(&regpath);
+            let _ = std::fs::remove_file(&keypath);
             break;
         }
         // recv_timeout already handles the wait; no additional sleep needed.

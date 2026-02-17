@@ -190,6 +190,9 @@ pub struct AppState {
     pub control_rx: Option<mpsc::Receiver<CtrlReq>>,
     pub control_port: Option<u16>,
     pub session_name: String,
+    /// -L socket name for namespace isolation (tmux compatible).
+    /// When set, port/key files are stored as `{socket_name}__{session_name}.port`.
+    pub socket_name: Option<String>,
     pub attached_clients: usize,
     pub created_at: chrono::DateTime<Local>,
     pub next_win_id: usize,
@@ -340,6 +343,7 @@ impl AppState {
             control_rx: None,
             control_port: None,
             session_name,
+            socket_name: None,
             attached_clients: 0,
             created_at: Local::now(),
             next_win_id: 1,
@@ -397,6 +401,17 @@ impl AppState {
             status_justify: "left".to_string(),
         }
     }
+
+    /// Get the port/key file base name, incorporating socket_name for -L namespace isolation.
+    /// When socket_name is set (via -L flag), files are stored as `{socket_name}__{session_name}`.
+    /// Otherwise, just the session_name is used.
+    pub fn port_file_base(&self) -> String {
+        if let Some(ref sn) = self.socket_name {
+            format!("{}__{}", sn, self.session_name)
+        } else {
+            self.session_name.clone()
+        }
+    }
 }
 
 pub struct DragState {
@@ -439,6 +454,7 @@ pub struct Bind { pub key: (KeyCode, KeyModifiers), pub action: Action, pub repe
 
 pub enum CtrlReq {
     NewWindow(Option<String>, Option<String>, bool, Option<String>),  // cmd, name, detached, start_dir
+    NewWindowPrint(Option<String>, Option<String>, bool, Option<String>, Option<String>, mpsc::Sender<String>),  // cmd, name, detached, start_dir, format, resp
     SplitWindow(LayoutKind, Option<String>, bool, Option<String>, Option<u16>),  // kind, cmd, detached, start_dir, size_percent
     SplitWindowPrint(LayoutKind, Option<String>, bool, Option<String>, Option<u16>, Option<String>, mpsc::Sender<String>),  // kind, cmd, detached, start_dir, size_percent, format, resp
     KillPane,

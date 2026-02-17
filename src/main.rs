@@ -43,9 +43,32 @@ fn main() -> io::Result<()> {
     // Clean up any stale port files at startup
     cleanup_stale_port_files();
     
+    // Parse -L flag early (tmux-compatible: names the server socket for namespace isolation)
+    // In psmux, -L <name> creates a namespace prefix for session port/key files.
+    // Sessions under -L "foo" are stored as "foo__sessionname.port".
+    // IMPORTANT: Only recognize -L as a global flag when it appears BEFORE the subcommand.
+    // This avoids conflict with subcommand flags (e.g. select-pane -L, resize-pane -L).
+    let mut l_socket_name: Option<String> = None;
+    {
+        let mut i = 1; // skip binary name
+        while i < args.len() {
+            let arg = &args[i];
+            if arg == "-L" && i + 1 < args.len() {
+                l_socket_name = Some(args[i + 1].clone());
+                i += 2;
+            } else if (arg == "-S" || arg == "-f" || arg == "-t") && i + 1 < args.len() {
+                i += 2; // skip other global flag-value pairs
+            } else if arg.starts_with('-') {
+                i += 1; // skip single global flags (e.g. -v, -V)
+            } else {
+                break; // hit the subcommand name — stop scanning for global flags
+            }
+        }
+    }
+
     // Parse -t flag early to set target session for all commands
     // Supports session:window.pane format (e.g., "dev:0.1")
-    // PSMUX_TARGET_SESSION stores just the session name (for port file lookup)
+    // PSMUX_TARGET_SESSION stores the port file base name (for port file lookup)
     // PSMUX_TARGET_FULL stores the full target (session:window.pane) for the server
     if let Some(pos) = args.iter().position(|a| a == "-t") {
         if let Some(target) = args.get(pos + 1) {
@@ -53,16 +76,54 @@ fn main() -> io::Result<()> {
             env::set_var("PSMUX_TARGET_FULL", target);
             // Extract just the session name for port file lookup
             let session = extract_session_from_target(target);
-            env::set_var("PSMUX_TARGET_SESSION", &session);
+            // Apply -L namespace prefix for port file lookup
+            let port_file_base = if let Some(ref l) = l_socket_name {
+                format!("{}__{}", l, session)
+            } else {
+                session.clone()
+            };
+            env::set_var("PSMUX_TARGET_SESSION", &port_file_base);
+        }
+    } else if env::var("PSMUX_TARGET_SESSION").is_err() {
+        // No -t flag: try to resolve session from TMUX env var (set inside psmux panes)
+        // TMUX format: /tmp/psmux-<pid>/<socket_name>,<port>,<session_idx>
+        if let Ok(tmux_val) = env::var("TMUX") {
+            // Extract the port from the TMUX value
+            let parts: Vec<&str> = tmux_val.split(',').collect();
+            if parts.len() >= 2 {
+                if let Ok(port) = parts[1].trim().parse::<u16>() {
+                    // Look up which session owns this port (port file base
+                    // already includes -L namespace prefix if applicable)
+                    let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
+                    let psmux_dir = format!("{}\\.psmux", home);
+                    if let Ok(entries) = std::fs::read_dir(&psmux_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.extension().map(|e| e == "port").unwrap_or(false) {
+                                if let Ok(port_str) = std::fs::read_to_string(&path) {
+                                    if let Ok(file_port) = port_str.trim().parse::<u16>() {
+                                        if file_port == port {
+                                            if let Some(port_file_base) = path.file_stem().and_then(|s| s.to_str()) {
+                                                env::set_var("PSMUX_TARGET_SESSION", port_file_base);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     
-    // Find the actual command by skipping -t and its argument
+    // Find the actual command by skipping -t/-L and their arguments
     let cmd_args: Vec<&String> = args.iter().skip(1).filter(|a| {
-        if *a == "-t" { return false; }
-        // Check if previous arg was -t
+        if *a == "-t" || *a == "-L" { return false; }
+        // Check if previous arg was -t or -L
         if let Some(pos) = args.iter().position(|x| x == *a) {
-            if pos > 0 && args[pos - 1] == "-t" { return false; }
+            if pos > 0 && (args[pos - 1] == "-t" || args[pos - 1] == "-L") { return false; }
         }
         true
     }).collect();
@@ -124,11 +185,21 @@ fn main() -> io::Result<()> {
         "ls" | "list-sessions" => {
                 let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
                 let dir = format!("{}\\.psmux", home);
+                // Compute namespace prefix for -L filtering
+                let ns_prefix = l_socket_name.as_ref().map(|l| format!("{l}__"));
                 if let Ok(entries) = std::fs::read_dir(&dir) {
                     for e in entries.flatten() {
                         if let Some(name) = e.file_name().to_str() {
                             if let Some((base, ext)) = name.rsplit_once('.') {
                                 if ext == "port" {
+                                    // Filter by -L namespace: when -L is given, only show
+                                    // sessions with that prefix; when no -L, only show
+                                    // sessions without any namespace prefix
+                                    if let Some(ref pfx) = ns_prefix {
+                                        if !base.starts_with(pfx.as_str()) { continue; }
+                                    } else {
+                                        if base.contains("__") { continue; }
+                                    }
                                     if let Ok(port_str) = std::fs::read_to_string(e.path()) {
                                         if let Ok(_p) = port_str.trim().parse::<u16>() {
                                             let addr = format!("127.0.0.1:{}", port_str.trim());
@@ -184,17 +255,28 @@ fn main() -> io::Result<()> {
             "server" => {
                 // Internal command - run headless server (used when spawning background server)
                 let name = args.iter().position(|a| a == "-s").and_then(|i| args.get(i+1)).map(|s| s.clone()).unwrap_or_else(|| "default".to_string());
+                // Parse -L socket name for namespace isolation
+                let server_socket_name = args.iter().position(|a| a == "-L").and_then(|i| args.get(i+1)).map(|s| s.clone());
                 // Check for initial command via -c flag (shell-wrapped)
                 let initial_cmd = args.iter().position(|a| a == "-c").and_then(|i| args.get(i+1)).map(|s| s.clone());
                 // Check for raw command after -- (direct execution)
                 let raw_cmd: Option<Vec<String>> = args.iter().position(|a| a == "--").map(|pos| {
                     args.iter().skip(pos + 1).cloned().collect()
                 }).filter(|v: &Vec<String>| !v.is_empty());
-                return run_server(name, initial_cmd, raw_cmd);
+                return run_server(name, server_socket_name, initial_cmd, raw_cmd);
             }
             "new-session" | "new" => {
-                let name = cmd_args.iter().position(|a| *a == "-s").and_then(|i| cmd_args.get(i+1)).map(|s| s.to_string()).unwrap_or_else(|| "default".to_string());
+                let name = cmd_args.iter().position(|a| *a == "-s").and_then(|i| cmd_args.get(i+1)).map(|s| s.to_string())
+                    .unwrap_or_else(|| "default".to_string());
+                // Compute port file base name: with -L namespace prefix if specified
+                let port_file_base = if let Some(ref l) = l_socket_name {
+                    format!("{}__{}", l, name)
+                } else {
+                    name.clone()
+                };
                 let detached = cmd_args.iter().any(|a| *a == "-d");
+                let print_info = cmd_args.iter().any(|a| *a == "-P");
+                let format_str: Option<String> = cmd_args.windows(2).find(|w| w[0] == "-F").map(|w| w[1].trim_matches('"').to_string());
                 // Check for -- separator: everything after it is a raw command (direct execution)
                 let dash_dash_pos = cmd_args.iter().position(|a| *a == "--");
                 let raw_cmd_args: Option<Vec<String>> = dash_dash_pos.map(|pos| {
@@ -207,7 +289,7 @@ fn main() -> io::Result<()> {
                     let mut cmd_parts: Vec<&str> = Vec::new();
                     for (i, arg) in cmd_args.iter().enumerate().skip(1) { // Skip command name
                         if skip_next { skip_next = false; continue; }
-                        if *arg == "-s" || *arg == "-t" { skip_next = true; continue; }
+                        if *arg == "-s" || *arg == "-t" || *arg == "-F" { skip_next = true; continue; }
                         if arg.starts_with('-') { continue; }
                         // This arg and all following are the command
                         cmd_parts.extend(cmd_args.iter().skip(i).map(|s| s.as_str()));
@@ -218,7 +300,7 @@ fn main() -> io::Result<()> {
                 
                 // Check if session already exists AND is actually running
                 let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-                let port_path = format!("{}\\.psmux\\{}.port", home, name);
+                let port_path = format!("{}\\.psmux\\{}.port", home, port_file_base);
                 if std::path::Path::new(&port_path).exists() {
                     // Verify server is actually running
                     let server_alive = if let Ok(port_str) = std::fs::read_to_string(&port_path) {
@@ -243,6 +325,11 @@ fn main() -> io::Result<()> {
                 // Always spawn a background server first
                 let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("psmux"));
                 let mut server_args: Vec<String> = vec!["server".into(), "-s".into(), name.clone()];
+                // Pass -L socket name to server for namespace isolation
+                if let Some(ref l) = l_socket_name {
+                    server_args.push("-L".into());
+                    server_args.push(l.clone());
+                }
                 // Pass initial command if provided
                 if let Some(ref init_cmd) = initial_cmd {
                     server_args.push("-c".into());
@@ -300,11 +387,28 @@ fn main() -> io::Result<()> {
                 }
                 
                 if detached {
-                    // User wants detached session - we're done
+                    // If -P flag, print pane info before returning
+                    if print_info {
+                        // Set target session so send_control_with_response connects to the right server
+                        env::set_var("PSMUX_TARGET_SESSION", &port_file_base);
+                        // Give server a moment to initialize
+                        std::thread::sleep(Duration::from_millis(200));
+                        // Query the server for pane info using display-message
+                        let fmt = if let Some(ref f) = format_str {
+                            f.clone()
+                        } else {
+                            // tmux default: new-session -P prints "session_name:"
+                            "#{session_name}:".to_string()
+                        };
+                        match send_control_with_response(format!("display-message -p {}\n", fmt)) {
+                            Ok(resp) => { let trimmed = resp.trim(); if !trimmed.is_empty() { println!("{}", trimmed); } }
+                            Err(_) => {}
+                        }
+                    }
                     return Ok(());
                 } else {
                     // User wants attached session - set env vars to attach
-                    env::set_var("PSMUX_SESSION_NAME", name);
+                    env::set_var("PSMUX_SESSION_NAME", &port_file_base);
                     env::set_var("PSMUX_REMOTE_ATTACH", "1");
                     // Continue to attach below...
                 }
@@ -313,18 +417,25 @@ fn main() -> io::Result<()> {
                 // Parse -n name flag
                 let name_arg: Option<String> = cmd_args.windows(2).find(|w| w[0] == "-n").map(|w| w[1].trim_matches('"').to_string());
                 let detached = cmd_args.iter().any(|a| *a == "-d");
+                let print_info = cmd_args.iter().any(|a| *a == "-P");
+                // Parse -F format string
+                let format_str: Option<String> = cmd_args.windows(2).find(|w| w[0] == "-F").map(|w| w[1].trim_matches('"').to_string());
                 // Parse -c start_dir flag
                 let start_dir: Option<String> = cmd_args.windows(2).find(|w| w[0] == "-c").map(|w| w[1].trim_matches('"').to_string());
-                // Parse command — first non-flag argument, excluding -n/-t/-c values
+                // Parse command — first non-flag argument, excluding -n/-t/-c/-F values
                 let cmd_arg = cmd_args.iter().skip(1)
                     .filter(|a| !a.starts_with('-'))
                     .find(|a| {
-                        // Exclude values of -n and -t flags
-                        !cmd_args.windows(2).any(|w| (w[0] == "-n" || w[0] == "-t" || w[0] == "-c") && w[1] == **a)
+                        // Exclude values of -n, -t, -c, -F flags
+                        !cmd_args.windows(2).any(|w| (w[0] == "-n" || w[0] == "-t" || w[0] == "-c" || w[0] == "-F") && w[1] == **a)
                     })
                     .map(|s| s.as_str()).unwrap_or("");
                 let mut cmd_line = "new-window".to_string();
                 if detached { cmd_line.push_str(" -d"); }
+                if print_info { cmd_line.push_str(" -P"); }
+                if let Some(ref fmt) = format_str {
+                    cmd_line.push_str(&format!(" -F \"{}\"", fmt.replace("\"", "\\\"")));
+                }
                 if let Some(name) = &name_arg {
                     cmd_line.push_str(&format!(" -n \"{}\"", name.replace("\"", "\\\"")));
                 }
@@ -335,7 +446,12 @@ fn main() -> io::Result<()> {
                     cmd_line.push_str(&format!(" \"{}\"", cmd_arg.replace("\"", "\\\"")));
                 }
                 cmd_line.push('\n');
-                send_control(cmd_line)?;
+                if print_info {
+                    let resp = send_control_with_response(cmd_line)?;
+                    print!("{}", resp);
+                } else {
+                    send_control(cmd_line)?;
+                }
                 return Ok(());
             }
             "split-window" | "splitw" => {
@@ -577,7 +693,13 @@ fn main() -> io::Result<()> {
                     match cmd_args[i].as_str() {
                         "-t" => {
                             if let Some(t) = cmd_args.get(i + 1) {
-                                target = Some(t.to_string());
+                                // Apply -L namespace prefix for port file lookup
+                                let namespaced = if let Some(ref l) = l_socket_name {
+                                    format!("{}__{}", l, t)
+                                } else {
+                                    t.to_string()
+                                };
+                                target = Some(namespaced);
                                 i += 1;
                             }
                         }
@@ -586,10 +708,17 @@ fn main() -> io::Result<()> {
                     i += 1;
                 }
                 let session_name = target.clone().unwrap_or_else(|| {
-                    env::var("PSMUX_TARGET_SESSION").unwrap_or_else(|_| "default".to_string())
+                    env::var("PSMUX_TARGET_SESSION").unwrap_or_else(|_| {
+                        // Apply -L namespace prefix to default
+                        if let Some(ref l) = l_socket_name {
+                            format!("{}__{}", l, "default")
+                        } else {
+                            "default".to_string()
+                        }
+                    })
                 });
-                if let Some(t) = target {
-                    env::set_var("PSMUX_TARGET_SESSION", &t);
+                if let Some(ref t) = target {
+                    env::set_var("PSMUX_TARGET_SESSION", t);
                 }
                 // Try to send kill command to server
                 if send_control("kill-session\n".to_string()).is_err() {
@@ -604,7 +733,7 @@ fn main() -> io::Result<()> {
             "has-session" | "has" => {
                 // Get target from env (set from -t flag) or from remaining args
                 let target = env::var("PSMUX_TARGET_SESSION").unwrap_or_else(|_| {
-                    // Try to get from cmd_args if -t is in there (shouldn't be, but just in case)
+                    // Try to get session name from cmd_args
                     let mut t = "default".to_string();
                     let mut i = 1;
                     while i < cmd_args.len() {
@@ -617,7 +746,12 @@ fn main() -> io::Result<()> {
                         }
                         i += 1;
                     }
-                    t
+                    // Apply -L namespace prefix for port file lookup
+                    if let Some(ref l) = l_socket_name {
+                        format!("{}__{}", l, t)
+                    } else {
+                        t
+                    }
                 });
                 let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
                 let path = format!("{}\\.psmux\\{}.port", home, target);
