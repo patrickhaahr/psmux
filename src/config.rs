@@ -460,7 +460,7 @@ pub fn parse_key_name(name: &str) -> Option<(KeyCode, KeyModifiers)> {
             return Some((KeyCode::BackTab, KeyModifiers::NONE));
         }
         if let Some(c) = rest.chars().next() {
-            if rest.len() == 1 {
+            if rest.chars().count() == 1 {
                 return Some((KeyCode::Char(c.to_ascii_uppercase()), KeyModifiers::SHIFT));
             }
         }
@@ -498,7 +498,7 @@ pub fn parse_key_name(name: &str) -> Option<(KeyCode, KeyModifiers)> {
         _ => {}
     }
     
-    if name.len() == 1 {
+    if name.chars().count() == 1 {
         if let Some(c) = name.chars().next() {
             return Some((KeyCode::Char(c), KeyModifiers::NONE));
         }
@@ -618,7 +618,7 @@ pub fn parse_key_string(key: &str) -> Option<(KeyCode, KeyModifiers)> {
         "{" => KeyCode::Char('{'),
         "}" => KeyCode::Char('}'),
         _ => {
-            if key_part.len() == 1 {
+            if key_part.chars().count() == 1 {
                 KeyCode::Char(key_part.chars().next().unwrap())
             } else {
                 return None;
